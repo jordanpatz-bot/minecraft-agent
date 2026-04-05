@@ -42,8 +42,10 @@ async function createAgent(opts = {}) {
       const movements = new Movements(bot);
       movements.canDig = true;
       movements.allowParkour = true;
-      movements.maxDropDown = 3;
+      movements.maxDropDown = 4;
+      movements.scafoldingBlocks = []; // don't place blocks while pathing
       bot.pathfinder.setMovements(movements);
+      bot.pathfinder.thinkTimeout = 15000; // 15s to compute path (default 5s)
 
       const agent = {
         bot,
