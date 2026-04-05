@@ -15,6 +15,7 @@ const { createAgent } = require('./core/bot');
 const { SkillWriter } = require('./skills/writer');
 const { SkillLibrary } = require('./skills/library');
 const { LLMProvider, extractJSON } = require('./llm/provider');
+const { ReflexTier } = require('./core/reflex');
 
 // --- Config ---
 const args = process.argv.slice(2);
@@ -75,6 +76,10 @@ async function main() {
 
   // Wait for chunks
   await sleep(3000);
+
+  // Start reflex tier (tick-level survival heuristics)
+  const reflex = new ReflexTier(bot);
+  reflex.start();
 
   // Chat history and stuck tracking
   const chatHistory = [];
