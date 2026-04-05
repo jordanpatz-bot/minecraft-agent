@@ -68,8 +68,10 @@ async function main() {
   // Wait for chunks
   await sleep(3000);
 
-  // Chat history for context
+  // Chat history and stuck tracking
   const chatHistory = [];
+  let lastPos = null;
+  let stuckCount = 0;
   bot.on('chat', (username, message) => {
     if (username !== bot.username) {
       chatHistory.push({ from: username, message, time: Date.now() });
@@ -96,8 +98,16 @@ async function main() {
       continue;
     }
 
+    // --- Stuck detection ---
+    if (!lastPos) lastPos = state.player.position;
+    const moved = Math.abs(state.player.position.x - lastPos.x) + Math.abs(state.player.position.z - lastPos.z);
+    if (moved < 0.5) stuckCount++;
+    else stuckCount = 0;
+    lastPos = { ...state.player.position };
+    const stuckWarning = stuckCount >= 3 ? `\nWARNING: You have been STUCK for ${stuckCount} turns. Try a different direction or learn a movement skill.` : '';
+
     // --- Strategy tier (LLM decision) ---
-    const skillList = library.list().map(s => `${s.name}: ${s.description}`).join('\n  ');
+    const skillList = library.list().map(s => `${s.name}${s.failCount > 0 ? ' (BROKEN)' : ''}: ${s.description}`).join('\n  ');
     const prompt = STRATEGY_PROMPT.replace('{SKILLS}', skillList || 'none');
 
     const stateStr = `GAME STATE:
@@ -108,7 +118,7 @@ Inventory: ${state.inventory.map(i => `${i.name}x${i.count}`).join(', ') || 'emp
 Equipment: ${JSON.stringify(state.equipment)}
 Nearby entities: ${state.entities.slice(0, 8).map(e => `${e.name}(${e.distance}m${e.hostile ? ',HOSTILE' : ''})`).join(', ') || 'none'}
 Nearby blocks: ${summarizeBlocks(state.nearbyBlocks)}
-${chatHistory.length > 0 ? 'Recent chat: ' + chatHistory.slice(-3).map(c => `${c.from}: ${c.message}`).join(' | ') : ''}`;
+${chatHistory.length > 0 ? 'Recent chat: ' + chatHistory.slice(-3).map(c => `${c.from}: ${c.message}`).join(' | ') : ''}${stuckWarning}`;
 
     console.log('[THINK] Asking LLM...');
     try {
@@ -199,10 +209,21 @@ async function executeAction(decision, bot, agent, writer, library) {
     }
     case 'move': {
       const dir = decision.direction || 'forward';
-      bot.setControlState(dir, true);
-      if (decision.sprint) bot.setControlState('sprint', true);
-      await sleep((decision.duration || 2) * 1000);
-      bot.clearControlStates();
+      // If LLM says a cardinal direction, convert to yaw + forward
+      const yawMap = { north: Math.PI, south: 0, east: -Math.PI/2, west: Math.PI/2 };
+      if (yawMap[dir] !== undefined) {
+        await bot.look(yawMap[dir], 0);
+        bot.setControlState('forward', true);
+      } else {
+        bot.setControlState(dir, true);
+      }
+      if (decision.jump) bot.setControlState('jump', true);
+      bot.setControlState('sprint', true);
+      await sleep((decision.duration || 3) * 1000);
+      // Clear all controls
+      for (const c of ['forward','back','left','right','jump','sprint','sneak']) {
+        bot.setControlState(c, false);
+      }
       break;
     }
     case 'chat': {
