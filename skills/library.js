@@ -107,9 +107,17 @@ class SkillLibrary {
     }
 
     try {
-      // Create the function from stored code
-      const fn = new Function('bot', 'params', `return (async () => { ${skill.code} })()`);
-      await fn(bot, params);
+      // Create the function with injected dependencies (same as writer.js)
+      const Vec3 = require('vec3').Vec3;
+      const { GoalNear, GoalBlock, GoalXZ, GoalFollow } = require('mineflayer-pathfinder').goals;
+      const { Movements } = require('mineflayer-pathfinder');
+      const mcData = require('minecraft-data')(bot.version);
+      const execCode = `return (async () => { ${skill.code} })()`;
+      const fn = new Function('bot', 'params', 'Vec3', 'goals', 'Movements', 'mcData', execCode);
+      await Promise.race([
+        fn(bot, params, Vec3, { GoalNear, GoalBlock, GoalXZ, GoalFollow }, Movements, mcData),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('Skill execution timeout (15s)')), 15000)),
+      ]);
 
       // Check postcondition
       const postFn = new Function('bot', 'params', `return (${skill.postcondition})`);

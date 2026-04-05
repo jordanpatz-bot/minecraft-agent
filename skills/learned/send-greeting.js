@@ -1,1 +1,0 @@
-await bot.chat('Hello, I am a bot!');

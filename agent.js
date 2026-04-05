@@ -1,0 +1,229 @@
+#!/usr/bin/env node
+'use strict';
+/**
+ * agent.js — Main autonomous agent loop.
+ *
+ * Connects to a Minecraft server, runs a goal-oriented agent with:
+ * - Reflex tier: hardcoded survival heuristics (mob flee, eat, etc.)
+ * - Skill tier: LLM-written skills for composed tasks
+ * - Strategy tier: periodic LLM planning for high-level goals
+ *
+ * Usage: node agent.js [--host HOST] [--port PORT] [--turns N] [--capture]
+ */
+
+const { createAgent } = require('./core/bot');
+const { SkillWriter } = require('./skills/writer');
+const { SkillLibrary } = require('./skills/library');
+const { LLMProvider, extractJSON } = require('./llm/provider');
+
+// --- Config ---
+const args = process.argv.slice(2);
+const HOST = args.find((_, i, a) => a[i-1] === '--host') || 'localhost';
+const PORT = parseInt(args.find((_, i, a) => a[i-1] === '--port') || '25565');
+const MAX_TURNS = parseInt(args.find((_, i, a) => a[i-1] === '--turns') || '20');
+const CAPTURE = args.includes('--capture');
+
+const STRATEGY_PROMPT = `You are an autonomous Minecraft agent. Analyze the current game state and decide what to do.
+
+You have a skill library with these skills: {SKILLS}
+
+AVAILABLE ACTIONS:
+1. Use an existing skill: {"action": "skill", "name": "skillName", "params": {}}
+2. Request a new skill: {"action": "learn", "goal": "natural language description of what to do"}
+3. Simple movement: {"action": "move", "direction": "forward|back|left|right", "duration": 2}
+4. Chat: {"action": "chat", "message": "text"}
+5. Wait/observe: {"action": "wait", "duration": 3}
+
+PRIORITIES:
+1. Survive: eat if hungry (food < 15), flee if hostile mob nearby
+2. Explore: move around, discover the area
+3. Gather: collect basic resources (wood, stone, food)
+4. Build: craft tools, build shelter before night
+5. Advance: pursue longer-term goals
+
+Respond with ONLY a JSON object:
+{
+  "reasoning": "what you observe and why you're choosing this action",
+  "action": "skill|learn|move|chat|wait",
+  ... action-specific fields
+}`;
+
+async function main() {
+  console.log(`[AGENT] Minecraft agent starting (${MAX_TURNS} turns)`);
+
+  const agent = await createAgent({ host: HOST, port: PORT });
+  const bot = agent.bot;
+  const llm = new LLMProvider({ provider: 'claude', model: 'haiku' });
+  const library = new SkillLibrary();
+  const writer = new SkillWriter({ llm, library, maxRetries: 2 });
+
+  // Optional: start capture
+  if (CAPTURE) {
+    const { StateCapture } = require('./perception/state-capture');
+    const capture = new StateCapture(agent);
+    capture.start(3.0);
+    process.on('exit', () => capture.stop());
+  }
+
+  // Wait for chunks
+  await sleep(3000);
+
+  // Chat history for context
+  const chatHistory = [];
+  bot.on('chat', (username, message) => {
+    if (username !== bot.username) {
+      chatHistory.push({ from: username, message, time: Date.now() });
+    }
+  });
+
+  // --- Main loop ---
+  for (let turn = 1; turn <= MAX_TURNS; turn++) {
+    console.log(`\n${'═'.repeat(50)}`);
+    console.log(`[TURN ${turn}/${MAX_TURNS}]`);
+    console.log('═'.repeat(50));
+
+    const state = agent.getState();
+    console.log(`[STATE] HP:${state.player.health}/20 Food:${state.player.food}/20 ` +
+      `Pos:(${state.player.position.x},${state.player.position.y},${state.player.position.z}) ` +
+      `${state.world.isDay ? 'Day' : 'NIGHT'} ${state.world.weather}`);
+    console.log(`[STATE] Entities:${state.entities.length} Inv:${state.inventory.length} items`);
+
+    // --- Reflex tier (immediate, no LLM) ---
+    const reflex = checkReflexes(state, bot);
+    if (reflex) {
+      console.log(`[REFLEX] ${reflex.action}: ${reflex.reason}`);
+      await executeReflex(reflex, bot);
+      continue;
+    }
+
+    // --- Strategy tier (LLM decision) ---
+    const skillList = library.list().map(s => `${s.name}: ${s.description}`).join('\n  ');
+    const prompt = STRATEGY_PROMPT.replace('{SKILLS}', skillList || 'none');
+
+    const stateStr = `GAME STATE:
+Position: (${state.player.position.x}, ${state.player.position.y}, ${state.player.position.z})
+Health: ${state.player.health}/20, Food: ${state.player.food}/20
+Time: ${state.world.isDay ? 'Day' : 'Night'}, Weather: ${state.world.weather}
+Inventory: ${state.inventory.map(i => `${i.name}x${i.count}`).join(', ') || 'empty'}
+Equipment: ${JSON.stringify(state.equipment)}
+Nearby entities: ${state.entities.slice(0, 8).map(e => `${e.name}(${e.distance}m${e.hostile ? ',HOSTILE' : ''})`).join(', ') || 'none'}
+Nearby blocks: ${summarizeBlocks(state.nearbyBlocks)}
+${chatHistory.length > 0 ? 'Recent chat: ' + chatHistory.slice(-3).map(c => `${c.from}: ${c.message}`).join(' | ') : ''}`;
+
+    console.log('[THINK] Asking LLM...');
+    try {
+      const response = await llm.call(prompt, stateStr);
+      const decision = extractJSON(response);
+
+      if (!decision) {
+        console.log('[THINK] Failed to parse LLM response');
+        continue;
+      }
+
+      console.log(`[THINK] ${decision.reasoning?.slice(0, 100)}`);
+      console.log(`[ACTION] ${decision.action}: ${JSON.stringify(decision).slice(0, 150)}`);
+
+      await executeAction(decision, bot, agent, writer, library);
+    } catch (err) {
+      console.error(`[ERROR] ${err.message}`);
+    }
+
+    await sleep(1000);
+  }
+
+  console.log('\n[AGENT] Session complete.');
+  process.exit(0);
+}
+
+// --- Reflex tier ---
+function checkReflexes(state, bot) {
+  // Hostile mob within 5 blocks
+  const nearHostile = state.entities.find(e => e.hostile && e.distance < 5);
+  if (nearHostile) {
+    return { action: 'flee', reason: `${nearHostile.name} at ${nearHostile.distance}m`, entity: nearHostile };
+  }
+
+  // Low food
+  if (state.player.food < 10) {
+    const food = state.inventory.find(i =>
+      ['bread', 'cooked_beef', 'cooked_porkchop', 'apple', 'cooked_chicken',
+       'baked_potato', 'cooked_mutton', 'cooked_salmon', 'cooked_cod'].includes(i.name)
+    );
+    if (food) {
+      return { action: 'eat', reason: `Food: ${state.player.food}/20`, food };
+    }
+  }
+
+  return null;
+}
+
+async function executeReflex(reflex, bot) {
+  switch (reflex.action) {
+    case 'flee': {
+      // Sprint away from hostile
+      bot.setControlState('sprint', true);
+      bot.setControlState('forward', true);
+      await sleep(3000);
+      bot.setControlState('sprint', false);
+      bot.setControlState('forward', false);
+      break;
+    }
+    case 'eat': {
+      const item = bot.inventory.items().find(i => i.name === reflex.food.name);
+      if (item) {
+        await bot.equip(item, 'hand');
+        await bot.consume();
+      }
+      break;
+    }
+  }
+}
+
+// --- Action execution ---
+async function executeAction(decision, bot, agent, writer, library) {
+  switch (decision.action) {
+    case 'skill': {
+      const result = await library.execute(decision.name, bot, decision.params || {});
+      console.log(`[SKILL] ${decision.name}: ${result.success ? 'OK' : 'FAIL — ' + result.error}`);
+      break;
+    }
+    case 'learn': {
+      const state = agent.getState();
+      const result = await writer.writeAndVerify(decision.goal, bot, {
+        inventory: state.inventory,
+        position: state.player.position,
+        nearbyBlocks: state.nearbyBlocks,
+      });
+      console.log(`[LEARN] ${result.success ? 'Stored: ' + result.skill?.name : 'Failed: ' + result.error}`);
+      break;
+    }
+    case 'move': {
+      const dir = decision.direction || 'forward';
+      bot.setControlState(dir, true);
+      if (decision.sprint) bot.setControlState('sprint', true);
+      await sleep((decision.duration || 2) * 1000);
+      bot.clearControlStates();
+      break;
+    }
+    case 'chat': {
+      bot.chat(decision.message || 'Hello!');
+      break;
+    }
+    case 'wait': {
+      await sleep((decision.duration || 3) * 1000);
+      break;
+    }
+    default:
+      console.log(`[ACTION] Unknown action: ${decision.action}`);
+  }
+}
+
+function summarizeBlocks(blocks) {
+  const types = {};
+  for (const b of blocks || []) types[b.name] = (types[b.name] || 0) + 1;
+  return Object.entries(types).map(([k, v]) => `${k}:${v}`).join(', ') || 'none';
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+main().catch(e => { console.error(e); process.exit(1); });
