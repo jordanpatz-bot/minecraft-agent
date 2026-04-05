@@ -39,23 +39,26 @@ class LLMProvider {
     };
     const modelId = modelMap[model] || model;
 
-    // Use the Anthropic SDK if available, otherwise fall back to CLI
-    try {
-      const Anthropic = require('@anthropic-ai/sdk');
-      const client = new Anthropic();
-      const response = await client.messages.create({
-        model: modelId,
-        max_tokens: 2048,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userMessage }],
-      });
-      const text = response.content[0]?.text || '';
-      this.tokenCount += (response.usage?.input_tokens || 0) + (response.usage?.output_tokens || 0);
-      return text;
-    } catch (e) {
-      // Fallback: use Claude CLI
-      return this._callClaudeCLI(systemPrompt, userMessage, model);
+    // Try Anthropic SDK first (requires ANTHROPIC_API_KEY)
+    if (process.env.ANTHROPIC_API_KEY) {
+      try {
+        const Anthropic = require('@anthropic-ai/sdk');
+        const client = new Anthropic();
+        const response = await client.messages.create({
+          model: modelId,
+          max_tokens: 2048,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userMessage }],
+        });
+        const text = response.content[0]?.text || '';
+        this.tokenCount += (response.usage?.input_tokens || 0) + (response.usage?.output_tokens || 0);
+        return text;
+      } catch (e) {
+        console.warn('[LLM] SDK failed, falling back to CLI:', e.message);
+      }
     }
+    // Fallback: Claude CLI (already authenticated)
+    return this._callClaudeCLI(systemPrompt, userMessage, model);
   }
 
   async _callClaudeCLI(systemPrompt, userMessage, model) {
@@ -90,4 +93,23 @@ class LLMProvider {
   }
 }
 
-module.exports = { LLMProvider };
+/**
+ * Extract JSON from LLM response (handles markdown code fences).
+ */
+function extractJSON(text) {
+  // Try direct parse first
+  try { return JSON.parse(text); } catch {}
+  // Strip markdown code fences
+  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (fenceMatch) {
+    try { return JSON.parse(fenceMatch[1].trim()); } catch {}
+  }
+  // Try to find JSON object/array in the text
+  const jsonMatch = text.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+  if (jsonMatch) {
+    try { return JSON.parse(jsonMatch[1]); } catch {}
+  }
+  return null;
+}
+
+module.exports = { LLMProvider, extractJSON };

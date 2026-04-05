@@ -11,7 +11,10 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.82.0",
+    "minecraft-data": "^3.109.0",
     "mineflayer": "^4.37.0",
-    "mineflayer-pathfinder": "^2.4.5"
+    "mineflayer-pathfinder": "^2.4.5",
+    "vec3": "^0.2.0"
   }
 }
