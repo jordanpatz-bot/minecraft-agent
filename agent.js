@@ -36,10 +36,18 @@ AVAILABLE ACTIONS:
 
 PRIORITIES:
 1. Survive: eat if hungry (food < 15), flee if hostile mob nearby
-2. Explore: move around, discover the area
-3. Gather: collect basic resources (wood, stone, food)
-4. Build: craft tools, build shelter before night
-5. Advance: pursue longer-term goals
+2. ALWAYS use skills when available — prefer "skill" over "move" or "learn"
+3. Crafting progression: gatherWood → craftPlanks → craftCraftingTable → craftWoodenPickaxe → mineStone
+4. If stuck on movement, use "skill" with "exploreForward" or "gatherWood" (they handle navigation internally)
+5. Only use "move" for fine positioning. Never spam "move" more than 2 turns in a row.
+6. Use "learn" only when no existing skill covers the goal
+
+CRAFTING CHAIN (follow this order):
+- Need logs? → skill: gatherWood (params: {count: 5})
+- Have logs? → skill: craftPlanks
+- Have 4+ planks? → skill: craftCraftingTable
+- Have crafting table + planks? → skill: craftWoodenPickaxe
+- Have pickaxe? → skill: mineStone
 
 Respond with ONLY a JSON object:
 {

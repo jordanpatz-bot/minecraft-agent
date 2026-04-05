@@ -116,7 +116,7 @@ class SkillLibrary {
       const fn = new Function('bot', 'params', 'Vec3', 'goals', 'Movements', 'mcData', execCode);
       await Promise.race([
         fn(bot, params, Vec3, { GoalNear, GoalBlock, GoalXZ, GoalFollow }, Movements, mcData),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('Skill execution timeout (15s)')), 15000)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('Skill execution timeout (30s)')), 30000)),
       ]);
 
       // Check postcondition

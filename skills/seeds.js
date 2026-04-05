@@ -38,28 +38,33 @@ for (let i = 0; i < count; i++) {
   },
   {
     name: 'craftPlanks',
-    description: 'Craft oak/birch logs into planks',
+    description: 'Craft any type of logs into planks',
     params: {},
     code: `
 const log = bot.inventory.items().find(i => i.name.includes('log'));
 if (!log) { throw new Error('No logs in inventory'); }
-const planksRecipe = bot.recipesFor(mcData.itemsByName.oak_planks?.id || mcData.itemsByName.birch_planks?.id)[0];
-if (!planksRecipe) { throw new Error('No planks recipe found'); }
-await bot.craft(planksRecipe, 1, null);
-bot.chat('Crafted planks');
+// Find the matching planks type for this log type
+const woodType = log.name.replace('_log', '').replace('stripped_', '');
+const planksName = woodType + '_planks';
+const planksItem = mcData.itemsByName[planksName];
+if (!planksItem) { throw new Error('Unknown planks type: ' + planksName); }
+const recipe = bot.recipesFor(planksItem.id)[0];
+if (!recipe) { throw new Error('No recipe for ' + planksName); }
+await bot.craft(recipe, 1, null);
+bot.chat('Crafted ' + planksName);
     `,
     postcondition: 'bot.inventory.items().some(i => i.name.includes("planks"))',
   },
   {
     name: 'craftCraftingTable',
-    description: 'Craft a crafting table from planks',
+    description: 'Craft a crafting table from any type of planks',
     params: {},
     code: `
 const planks = bot.inventory.items().find(i => i.name.includes('planks'));
-if (!planks || planks.count < 4) { throw new Error('Need 4+ planks'); }
-const recipe = bot.recipesFor(mcData.itemsByName.crafting_table.id)[0];
-if (!recipe) { throw new Error('No crafting table recipe'); }
-await bot.craft(recipe, 1, null);
+if (!planks || planks.count < 4) { throw new Error('Need 4+ planks (have ' + (planks?.count || 0) + ')'); }
+const recipes = bot.recipesFor(mcData.itemsByName.crafting_table.id);
+if (!recipes.length) { throw new Error('No crafting table recipe found'); }
+await bot.craft(recipes[0], 1, null);
 bot.chat('Crafted crafting table');
     `,
     postcondition: 'bot.inventory.items().some(i => i.name === "crafting_table")',
@@ -70,27 +75,42 @@ bot.chat('Crafted crafting table');
     params: {},
     code: `
 // Find or place crafting table
-let table = bot.findBlock({ matching: mcData.blocksByName.crafting_table.id, maxDistance: 4 });
+let table = bot.findBlock({ matching: mcData.blocksByName.crafting_table.id, maxDistance: 8 });
 if (!table) {
   const tableItem = bot.inventory.items().find(i => i.name === 'crafting_table');
-  if (!tableItem) { throw new Error('No crafting table'); }
-  // Place it on the ground nearby
-  const ground = bot.blockAt(bot.entity.position.offset(1, -1, 0));
-  if (ground) {
-    await bot.equip(tableItem, 'hand');
-    await bot.placeBlock(ground, new Vec3(0, 1, 0));
-    await new Promise(r => setTimeout(r, 500));
-    table = bot.findBlock({ matching: mcData.blocksByName.crafting_table.id, maxDistance: 4 });
+  if (!tableItem) { throw new Error('No crafting table in inventory'); }
+  await bot.equip(tableItem, 'hand');
+  // Look down and find a solid block to place on
+  const pos = bot.entity.position;
+  for (const offset of [[1,0,0],[0,0,1],[-1,0,0],[0,0,-1]]) {
+    const target = pos.offset(offset[0], -1, offset[2]);
+    const block = bot.blockAt(target);
+    const above = bot.blockAt(target.offset(0, 1, 0));
+    if (block && block.name !== 'air' && above && above.name === 'air') {
+      try {
+        await bot.placeBlock(block, new Vec3(0, 1, 0));
+        await new Promise(r => setTimeout(r, 1000));
+        break;
+      } catch(e) { /* try next position */ }
+    }
   }
+  table = bot.findBlock({ matching: mcData.blocksByName.crafting_table.id, maxDistance: 8 });
 }
 if (!table) { throw new Error('Could not find/place crafting table'); }
 
-// Need sticks + planks
-const sticksRecipe = bot.recipesFor(mcData.itemsByName.stick.id, null, 1, table)[0] || bot.recipesFor(mcData.itemsByName.stick.id)[0];
-if (sticksRecipe) await bot.craft(sticksRecipe, 1, table);
+// Navigate to table
+await bot.pathfinder.goto(new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2));
 
+// Craft sticks (need 2 planks → 4 sticks)
+const sticksRecipe = bot.recipesFor(mcData.itemsByName.stick.id, null, 1, table)[0];
+if (sticksRecipe) {
+  await bot.craft(sticksRecipe, 2, table);
+  bot.chat('Crafted sticks');
+}
+
+// Craft wooden pickaxe (3 planks + 2 sticks)
 const pickRecipe = bot.recipesFor(mcData.itemsByName.wooden_pickaxe.id, null, 1, table)[0];
-if (!pickRecipe) { throw new Error('No wooden pickaxe recipe'); }
+if (!pickRecipe) { throw new Error('No wooden pickaxe recipe — need 3 planks + 2 sticks'); }
 await bot.craft(pickRecipe, 1, table);
 bot.chat('Crafted wooden pickaxe!');
     `,

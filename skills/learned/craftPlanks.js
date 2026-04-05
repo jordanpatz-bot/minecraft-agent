@@ -1,8 +1,13 @@
 
 const log = bot.inventory.items().find(i => i.name.includes('log'));
 if (!log) { throw new Error('No logs in inventory'); }
-const planksRecipe = bot.recipesFor(mcData.itemsByName.oak_planks?.id || mcData.itemsByName.birch_planks?.id)[0];
-if (!planksRecipe) { throw new Error('No planks recipe found'); }
-await bot.craft(planksRecipe, 1, null);
-bot.chat('Crafted planks');
+// Find the matching planks type for this log type
+const woodType = log.name.replace('_log', '').replace('stripped_', '');
+const planksName = woodType + '_planks';
+const planksItem = mcData.itemsByName[planksName];
+if (!planksItem) { throw new Error('Unknown planks type: ' + planksName); }
+const recipe = bot.recipesFor(planksItem.id)[0];
+if (!recipe) { throw new Error('No recipe for ' + planksName); }
+await bot.craft(recipe, 1, null);
+bot.chat('Crafted ' + planksName);
     

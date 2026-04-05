@@ -133,7 +133,7 @@ Existing skills in library: ${this.library.list().map(s => s.name).join(', ') ||
         const mcData = require('minecraft-data')(bot.version);
         await Promise.race([
           fn(bot, skill.params || {}, Vec3, { GoalNear, GoalBlock, GoalXZ, GoalFollow }, Movements, mcData),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('Execution timeout (15s)')), 15000)),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('Skill execution timeout (30s)')), 30000)),
         ]);
 
         // Check postcondition
