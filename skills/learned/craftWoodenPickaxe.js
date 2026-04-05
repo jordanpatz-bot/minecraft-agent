@@ -1,3 +1,4 @@
+
 // Find or place crafting table
 let table = bot.findBlock({ matching: mcData.blocksByName.crafting_table.id, maxDistance: 8 });
 if (!table) {
@@ -33,15 +34,11 @@ try {
   bot.setControlState('forward', false);
 }
 
-// First, ensure we have 3 planks by crafting oak logs if needed
-const plankCount = bot.inventory.items().filter(i => i.name === 'oak_planks').reduce((sum, i) => sum + i.count, 0);
-if (plankCount < 3) {
-  const logRecipe = bot.recipesFor(mcData.itemsByName.oak_planks.id, null, 1, table)[0];
-  if (logRecipe) {
-    const logsNeeded = Math.ceil((3 - plankCount) / 4);
-    await bot.craft(logRecipe, logsNeeded, table);
-    bot.chat('Crafted planks from logs');
-  }
+// Craft sticks (need 2 planks → 4 sticks)
+const sticksRecipe = bot.recipesFor(mcData.itemsByName.stick.id, null, 1, table)[0];
+if (sticksRecipe) {
+  await bot.craft(sticksRecipe, 2, table);
+  bot.chat('Crafted sticks');
 }
 
 // Craft wooden pickaxe (3 planks + 2 sticks)
@@ -49,3 +46,4 @@ const pickRecipe = bot.recipesFor(mcData.itemsByName.wooden_pickaxe.id, null, 1,
 if (!pickRecipe) { throw new Error('No wooden pickaxe recipe — need 3 planks + 2 sticks'); }
 await bot.craft(pickRecipe, 1, table);
 bot.chat('Crafted wooden pickaxe!');
+    

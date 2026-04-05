@@ -12,9 +12,12 @@
   "type": "commonjs",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.82.0",
+    "canvas": "^3.2.3",
     "minecraft-data": "^3.109.0",
     "mineflayer": "^4.37.0",
     "mineflayer-pathfinder": "^2.4.5",
+    "prismarine-viewer": "^1.33.0",
+    "puppeteer": "^24.40.0",
     "vec3": "^0.2.0"
   }
 }
