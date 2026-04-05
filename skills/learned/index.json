@@ -7,7 +7,7 @@
     "dependencies": [],
     "code": "\nconst count = params.count || 1;\nlet gathered = 0;\nfor (let i = 0; i < count; i++) {\n  const log = bot.findBlock({\n    matching: block => block.name.includes('log'),\n    maxDistance: 32,\n  });\n  if (!log) { bot.chat('No logs found nearby'); break; }\n  \n  // Navigate to the log\n  await bot.pathfinder.goto(new goals.GoalBlock(log.position.x, log.position.y, log.position.z));\n  \n  // Mine it\n  await bot.dig(log);\n  gathered++;\n  bot.chat('Mined ' + gathered + '/' + count + ' logs');\n  \n  // Wait for item to be collected\n  await new Promise(r => setTimeout(r, 500));\n}\n    ",
     "postcondition": "bot.inventory.items().some(i => i.name.includes(\"log\"))",
-    "failCount": 1,
+    "failCount": 5,
     "createdAt": "2026-04-05T04:27:28.942Z"
   },
   "craftPlanks": {
@@ -34,7 +34,7 @@
     "dependencies": [],
     "code": "\n// Find or place crafting table\nlet table = bot.findBlock({ matching: mcData.blocksByName.crafting_table.id, maxDistance: 8 });\nif (!table) {\n  const tableItem = bot.inventory.items().find(i => i.name === 'crafting_table');\n  if (!tableItem) { throw new Error('No crafting table in inventory'); }\n  await bot.equip(tableItem, 'hand');\n  // Look down and find a solid block to place on\n  const pos = bot.entity.position;\n  for (const offset of [[1,0,0],[0,0,1],[-1,0,0],[0,0,-1]]) {\n    const target = pos.offset(offset[0], -1, offset[2]);\n    const block = bot.blockAt(target);\n    const above = bot.blockAt(target.offset(0, 1, 0));\n    if (block && block.name !== 'air' && above && above.name === 'air') {\n      try {\n        await bot.placeBlock(block, new Vec3(0, 1, 0));\n        await new Promise(r => setTimeout(r, 1000));\n        break;\n      } catch(e) { /* try next position */ }\n    }\n  }\n  table = bot.findBlock({ matching: mcData.blocksByName.crafting_table.id, maxDistance: 8 });\n}\nif (!table) { throw new Error('Could not find/place crafting table'); }\n\n// Navigate to table\nawait bot.pathfinder.goto(new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2));\n\n// Craft sticks (need 2 planks → 4 sticks)\nconst sticksRecipe = bot.recipesFor(mcData.itemsByName.stick.id, null, 1, table)[0];\nif (sticksRecipe) {\n  await bot.craft(sticksRecipe, 2, table);\n  bot.chat('Crafted sticks');\n}\n\n// Craft wooden pickaxe (3 planks + 2 sticks)\nconst pickRecipe = bot.recipesFor(mcData.itemsByName.wooden_pickaxe.id, null, 1, table)[0];\nif (!pickRecipe) { throw new Error('No wooden pickaxe recipe — need 3 planks + 2 sticks'); }\nawait bot.craft(pickRecipe, 1, table);\nbot.chat('Crafted wooden pickaxe!');\n    ",
     "postcondition": "bot.inventory.items().some(i => i.name === \"wooden_pickaxe\")",
-    "failCount": 1,
+    "failCount": 4,
     "createdAt": "2026-04-05T04:27:28.947Z"
   },
   "mineStone": {
