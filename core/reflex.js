@@ -23,11 +23,12 @@ const FOOD_ITEMS = new Set([
 ]);
 
 class ReflexTier {
-  constructor(bot) {
+  constructor(bot, opts = {}) {
     this.bot = bot;
     this.active = false;
     this.lastReflex = null;
     this._onTick = null;
+    this.audioCapture = opts.audioCapture || null; // optional AudioCapture instance
   }
 
   /** Start monitoring (hooks into physics tick). */
@@ -73,7 +74,19 @@ class ReflexTier {
       }
     }
 
-    // 3. On fire → jump into water or crouch
+    // 3. Audio threat: critical sound behind player → dodge
+    if (this.audioCapture) {
+      const threats = this.audioCapture.getThreatEvents(2000);
+      const critical = threats.find(t =>
+        t.threatInfo?.urgency === 'critical' && t.distance && t.distance < 10
+      );
+      if (critical) {
+        this._triggerAudioDodge(critical);
+        return;
+      }
+    }
+
+    // 4. On fire → jump into water or crouch
     if (bot.entity.isOnFire) {
       this._triggerFireResponse();
       return;
@@ -112,6 +125,35 @@ class ReflexTier {
       // ignore eat failures
     }
     this.active = false;
+  }
+
+  async _triggerAudioDodge(soundEvent) {
+    this.active = true;
+    this.lastReflex = { type: 'audio_dodge', sound: soundEvent.name, direction: soundEvent.direction, time: Date.now() };
+    console.log(`[REFLEX] AUDIO DODGE — ${soundEvent.name} from ${soundEvent.direction} at ${soundEvent.distance}m`);
+
+    const bot = this.bot;
+    // Sprint away from the sound direction
+    // If sound is behind → sprint forward. If left → sprint right. Etc.
+    const dir = soundEvent.direction;
+    if (dir === 'behind') {
+      bot.setControlState('forward', true);
+    } else if (dir === 'front') {
+      bot.setControlState('back', true);
+    } else if (dir === 'left') {
+      bot.setControlState('right', true);
+    } else {
+      bot.setControlState('left', true);
+    }
+    bot.setControlState('sprint', true);
+    bot.setControlState('jump', true);
+
+    setTimeout(() => {
+      for (const c of ['forward', 'back', 'left', 'right', 'sprint', 'jump']) {
+        bot.setControlState(c, false);
+      }
+      this.active = false;
+    }, 1500);
   }
 
   async _triggerFireResponse() {

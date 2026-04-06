@@ -107,11 +107,16 @@ async function main() {
     });
   }
 
+  // --- Audio capture ---
+  const { AudioCapture } = require('./perception/audio-capture');
+  const audioCapture = new AudioCapture(bot);
+  audioCapture.start();
+
   // Wait for chunks
   await sleep(3000);
 
-  // Start reflex tier (tick-level survival heuristics)
-  const reflex = new ReflexTier(bot);
+  // Start reflex tier (tick-level survival heuristics, with audio)
+  const reflex = new ReflexTier(bot, { audioCapture });
   reflex.start();
 
   // Chat history and stuck tracking
@@ -209,7 +214,17 @@ Nearby entities: ${state.entities.slice(0, 8).map(e => {
   return desc + ')';
 }).join(', ') || 'none'}
 Nearby blocks: ${summarizeBlocks(state.nearbyBlocks)}
-${chatHistory.length > 0 ? 'Recent chat: ' + chatHistory.slice(-3).map(c => `${c.from}: ${c.message}`).join(' | ') : ''}${stuckWarning}`;
+${chatHistory.length > 0 ? 'Recent chat: ' + chatHistory.slice(-3).map(c => `${c.from}: ${c.message}`).join(' | ') : ''}${stuckWarning}
+${(() => {
+  const audioSummary = audioCapture.getSummary(10000);
+  if (audioSummary.threatCount > 0) {
+    const threatDescs = Object.entries(audioSummary.threats)
+      .map(([mob, info]) => `${mob}(${info.direction},${info.closest}m,${info.urgency})`)
+      .join(', ');
+    return `Audio threats: ${threatDescs}`;
+  }
+  return audioSummary.totalSounds > 0 ? `Ambient sounds: ${audioSummary.totalSounds} in last 10s` : '';
+})()}`;
 
     console.log('[THINK] Asking LLM...');
     try {

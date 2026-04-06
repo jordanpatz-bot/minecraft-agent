@@ -19,6 +19,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const args = process.argv.slice(2);
 const TARGET = parseInt(args.find((_, i, a) => a[i-1] === '--frames') || '500');
 const VIEWER_PORT = parseInt(args.find((_, i, a) => a[i-1] === '--port') || '3002');
+const AGENT_ID = process.env.CAPTURE_AGENT_ID || '0';
+const BOT_NAME = `Cap${AGENT_ID}_${Math.random().toString(36).slice(2, 5)}`;
 const OUTPUT = path.join(__dirname, '..', 'data', 'entity_captures');
 fs.mkdirSync(OUTPUT, { recursive: true });
 
@@ -37,7 +39,7 @@ async function main() {
 
   // Connect bot
   const bot = mineflayer.createBot({
-    host: 'localhost', port: 25565, username: 'CapBot',
+    host: 'localhost', port: 25565, username: BOT_NAME,
     checkTimeoutInterval: 60000,
   });
   bot.on('error', e => console.log('[BOT ERR]', e.message));
@@ -45,13 +47,18 @@ async function main() {
   await new Promise(r => bot.once('spawn', r));
   await sleep(2000);
 
+  // Audio capture
+  const { AudioCapture } = require('./audio-capture');
+  const audio = new AudioCapture(bot);
+  audio.start();
+
   // RCON
   const rcon = await Rcon.connect({ host: 'localhost', port: 25575, password: 'botadmin' });
-  await rcon.send('gamemode creative CapBot');
+  await rcon.send(`gamemode creative ${BOT_NAME}`);
   await sleep(500);
 
   // Initial teleport
-  await rcon.send('spreadplayers 0 0 0 500 false CapBot');
+  await rcon.send(`spreadplayers 0 0 0 500 false ${BOT_NAME}`);
   await sleep(3000);
   for (let i = 0; i < 20; i++) { await sleep(300); if (bot.entity.onGround) break; }
 
@@ -72,12 +79,13 @@ async function main() {
   await sleep(5000);
   console.log('[READY] Playwright + viewer connected');
 
-  // Check existing frames for resume
+  // Use agent-specific prefix for frame naming (avoids collisions in multi-agent mode)
+  const PREFIX = `a${AGENT_ID}_`;
   let frameIdx = 0;
-  const existing = fs.readdirSync(OUTPUT).filter(f => f.startsWith('frame_') && f.endsWith('.jpg'));
+  const existing = fs.readdirSync(OUTPUT).filter(f => f.startsWith(`${PREFIX}frame_`) && f.endsWith('.jpg'));
   if (existing.length > 0) {
     frameIdx = existing.length;
-    console.log(`[RESUME] Starting from frame ${frameIdx}`);
+    console.log(`[RESUME] Agent ${AGENT_ID} starting from frame ${frameIdx}`);
   }
 
   let timeIdx = 0;
@@ -88,7 +96,7 @@ async function main() {
     if (frameIdx % 40 === 0) {
       const rx = Math.floor(Math.random() * 6000 - 3000);
       const rz = Math.floor(Math.random() * 6000 - 3000);
-      try { await rcon.send(`spreadplayers ${rx} ${rz} 0 500 false CapBot`); } catch {}
+      try { await rcon.send(`spreadplayers ${rx} ${rz} 0 500 false ${BOT_NAME}`); } catch {}
       await sleep(3000);
       for (let i = 0; i < 15; i++) { await sleep(300); if (bot.entity.onGround) break; }
 
@@ -133,7 +141,7 @@ async function main() {
     const idx = String(frameIdx).padStart(5, '0');
     try {
       await page.screenshot({
-        path: path.join(OUTPUT, `frame_${idx}.jpg`),
+        path: path.join(OUTPUT, `${PREFIX}frame_${idx}.jpg`),
         type: 'jpeg', quality: 85,
       });
     } catch (e) {
@@ -143,7 +151,7 @@ async function main() {
         await page.reload({ waitUntil: 'networkidle', timeout: 10000 });
         await sleep(3000);
         await page.screenshot({
-          path: path.join(OUTPUT, `frame_${idx}.jpg`),
+          path: path.join(OUTPUT, `${PREFIX}frame_${idx}.jpg`),
           type: 'jpeg', quality: 85,
         });
       } catch { continue; }
@@ -170,7 +178,11 @@ async function main() {
           if (b && b.name !== 'air') { blks.add(b.name); blocks.add(b.name); }
         }
 
-    fs.writeFileSync(path.join(OUTPUT, `state_${idx}.json`), JSON.stringify({
+    // Audio events from last 2 seconds (paired with this frame)
+    const audioEvents = audio.getRecentEvents(2000);
+    const audioSummary = audio.getSummary(5000);
+
+    fs.writeFileSync(path.join(OUTPUT, `${PREFIX}state_${idx}.json`), JSON.stringify({
       timestamp: Date.now(), frameIdx,
       player: {
         x: +pos.x.toFixed(2), y: +pos.y.toFixed(2), z: +pos.z.toFixed(2),
@@ -179,6 +191,14 @@ async function main() {
       },
       world: { time: bot.time.timeOfDay, isDay: bot.time.timeOfDay < 13000, biome: 'unknown' },
       entities, blockTypes: [...blks],
+      audio: {
+        recentEvents: audioEvents.map(e => ({
+          name: e.name, classification: e.classification,
+          distance: e.distance, direction: e.direction,
+          volume: e.volume, urgency: e.threatInfo?.urgency,
+        })),
+        summary: audioSummary,
+      },
     }));
 
     frameIdx++;
@@ -202,10 +222,15 @@ async function main() {
   try { await rcon.send('kill @e[type=!player,distance=..200]'); } catch {}
 
   // Save metadata
-  fs.writeFileSync(path.join(OUTPUT, 'metadata.json'), JSON.stringify({
+  fs.writeFileSync(path.join(OUTPUT, `${PREFIX}metadata.json`), JSON.stringify({
     frames: frameIdx, entityTypes: [...ents].sort(), blockTypes: [...blocks].sort(),
     captureMethod: 'playwright',
+    audioEvents: audio.events.length,
+    uniqueSounds: [...new Set(audio.events.map(e => e.name))].sort(),
   }, null, 2));
+
+  // Save full audio log
+  audio.saveEvents(path.join(OUTPUT, `${PREFIX}audio_log.json`));
 
   console.log(`\n=== DONE: ${frameIdx} frames, ${ents.size} entity types, ${blocks.size} block types ===`);
   await browser.close();
