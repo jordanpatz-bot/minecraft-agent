@@ -44,22 +44,24 @@ class VisionPerception {
       bbox: { x1: d.x1, y1: d.y1, x2: d.x2, y2: d.y2 },
     }));
 
-    // Time of day from frame brightness (TODO: proper classifier)
-    // For now, use a simple heuristic
+    // Time of day from sky color analysis
+    const timeInfo = classifyTimeFromFrame(framePath);
 
     const state = {
       _source: 'vision',
       player: {
-        health: null, // can't determine from screenshot without HUD
+        health: null, // not available in prismarine-viewer (no HUD)
         food: null,
         position: null,
       },
       world: {
-        isDay: true, // TODO: classify from sky color
+        isDay: timeInfo.isDay,
+        timePhase: timeInfo.phase, // 'dawn', 'day', 'dusk', 'night'
+        skyBrightness: timeInfo.brightness,
       },
       entities,
-      nearbyBlocks: [], // TODO: block classifier
-      inventory: [], // TODO: HUD reader
+      nearbyBlocks: [], // TODO: block classifier from terrain textures
+      inventory: [], // requires Mineflayer API, not visible in viewer
       equipment: {},
     };
 
@@ -92,6 +94,54 @@ function estimateDistance(detection) {
   if (bboxArea > 500) return 10;
   if (bboxArea > 100) return 20;
   return 30;
+}
+
+/**
+ * Classify time of day from sky color in the top portion of the frame.
+ * Uses the average color of the sky region to determine day phase.
+ */
+function classifyTimeFromFrame(framePath) {
+  try {
+    const { execSync } = require('child_process');
+    // Use Python+cv2 for quick sky analysis
+    const script = `
+import cv2, json, sys, numpy as np
+frame = cv2.imread('${framePath}')
+if frame is None:
+    print(json.dumps({"isDay": True, "phase": "unknown", "brightness": 128}))
+    sys.exit(0)
+
+h, w = frame.shape[:2]
+# Sample top 15% of frame for sky color
+sky = frame[:int(h*0.15), :]
+avg_b, avg_g, avg_r = [float(x) for x in cv2.mean(sky)[:3]]
+brightness = (avg_r + avg_g + avg_b) / 3
+
+# Classify based on brightness and color
+if brightness > 170:
+    phase = "day"
+    is_day = True
+elif brightness > 120:
+    # Dawn/dusk: warm tones (more red)
+    if avg_r > avg_b + 20:
+        phase = "dusk"
+    else:
+        phase = "dawn"
+    is_day = True
+elif brightness > 50:
+    phase = "dusk"
+    is_day = False
+else:
+    phase = "night"
+    is_day = False
+
+print(json.dumps({"isDay": is_day, "phase": phase, "brightness": round(brightness, 1)}))
+`;
+    const result = execSync(`python3 -c '${script.replace(/'/g, "'\\''")}'`, { timeout: 5000 });
+    return JSON.parse(result.toString().trim());
+  } catch {
+    return { isDay: true, phase: 'unknown', brightness: 128 };
+  }
 }
 
 module.exports = { VisionPerception };
