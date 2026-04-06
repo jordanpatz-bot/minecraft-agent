@@ -137,6 +137,23 @@ async function main() {
 
     const state = agent.getState();
 
+    // --- Position recovery: if NaN, teleport to safety via RCON ---
+    if (state._positionInvalid) {
+      console.log('[RECOVER] Position is NaN — teleporting to safety');
+      try {
+        const { Rcon } = require('rcon-client');
+        const rcon = await Rcon.connect({ host: 'localhost', port: 25575, password: 'botadmin' });
+        await rcon.send(`spreadplayers 0 0 0 200 false ${bot.username}`);
+        await rcon.end();
+        await sleep(3000);
+        console.log('[RECOVER] Teleported, waiting for chunks...');
+        await sleep(2000);
+      } catch (e) {
+        console.log('[RECOVER] RCON failed:', e.message);
+      }
+      continue; // skip this turn, let position stabilize
+    }
+
     // --- Vision perception ---
     if (visionPerception && viewerPage) {
       try {

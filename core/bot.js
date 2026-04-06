@@ -38,6 +38,19 @@ async function createAgent(opts = {}) {
     bot.once('spawn', () => {
       console.log(`[BOT] Spawned as ${bot.username} at ${fmt(bot.entity.position)}`);
 
+      // Guard against NaN position — save last valid position
+      let lastValidPos = bot.entity.position.clone();
+      const origPosGetter = Object.getOwnPropertyDescriptor(bot.entity, 'position');
+      bot.on('move', () => {
+        const p = bot.entity.position;
+        if (p && !isNaN(p.x) && !isNaN(p.y) && !isNaN(p.z)) {
+          lastValidPos = p.clone();
+        } else if (lastValidPos) {
+          // Restore last valid position
+          bot.entity.position.set(lastValidPos.x, lastValidPos.y, lastValidPos.z);
+        }
+      });
+
       // Configure pathfinder
       const movements = new Movements(bot);
       movements.canDig = true;
@@ -108,6 +121,16 @@ async function createAgent(opts = {}) {
  */
 function extractState(bot) {
   const pos = bot.entity.position;
+
+  // Guard against NaN position (can happen after teleport/flee into unloaded chunks)
+  if (isNaN(pos.x) || isNaN(pos.y) || isNaN(pos.z)) {
+    return {
+      player: { name: bot.username, position: { x: 0, y: 64, z: 0 }, health: bot.health, food: bot.food, xp: 0, yaw: 0, pitch: 0 },
+      world: { time: bot.time?.timeOfDay || 0, isDay: true, biome: 'unknown', weather: 'clear' },
+      entities: [], nearbyBlocks: [], inventory: bot.inventory.items().map(i => ({ name: i.displayName || i.name, count: i.count, slot: i.slot })),
+      equipment: {}, messages: [], _positionInvalid: true,
+    };
+  }
 
   // Nearby blocks (5x5x5 cube around player)
   const nearbyBlocks = [];

@@ -194,18 +194,33 @@ if (dist > 3) {
   }
 }
 
-// Step 5: Craft sticks if needed
+// Step 5: Get right next to the table and re-find it
+await bot.lookAt(table.position.offset(0.5, 0.5, 0.5));
+try {
+  await bot.pathfinder.goto(new goals.GoalNear(table.position.x, table.position.y, table.position.z, 1));
+} catch(e) {
+  bot.setControlState('forward', true);
+  await sleep(1000);
+  bot.setControlState('forward', false);
+}
+await sleep(500);
+// Re-find table (block reference may be stale after pathfinding)
+table = bot.findBlock({ matching: mcData.blocksByName.crafting_table.id, maxDistance: 4 });
+if (!table) throw new Error('Lost sight of crafting table');
+
+// Step 6: Craft sticks if needed
 const sticks = bot.inventory.items().find(i => i.name === 'stick');
 if (!sticks || sticks.count < 2) {
   const sticksRecipe = bot.recipesFor(mcData.itemsByName.stick.id, null, 1, table)[0];
   if (sticksRecipe) {
     await bot.craft(sticksRecipe, 1, table);
-    await sleep(300);
+    await sleep(500);
     bot.chat('Crafted sticks');
   }
 }
 
-// Step 6: Craft wooden pickaxe
+// Step 7: Craft wooden pickaxe
+await sleep(300);
 const pickRecipe = bot.recipesFor(mcData.itemsByName.wooden_pickaxe.id, null, 1, table)[0];
 if (!pickRecipe) throw new Error('No pickaxe recipe found — check materials');
 await bot.craft(pickRecipe, 1, table);

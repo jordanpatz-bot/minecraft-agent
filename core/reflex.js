@@ -98,19 +98,19 @@ class ReflexTier {
     this.lastReflex = { type: 'flee', entity: entity.name, time: Date.now() };
     console.log(`[REFLEX] FLEE from ${entity.name} at ${entity.position.distanceTo(this.bot.entity.position).toFixed(0)}m`);
 
-    // Sprint away from the hostile
     const bot = this.bot;
     const away = bot.entity.position.minus(entity.position).normalize();
-    const target = bot.entity.position.plus(away.scaled(10));
+    const target = bot.entity.position.plus(away.scaled(5));
     await bot.lookAt(target);
     bot.setControlState('sprint', true);
     bot.setControlState('forward', true);
 
+    // Shorter flee (1.5s instead of 3s) to avoid running off cliffs/into void
     setTimeout(() => {
       bot.setControlState('sprint', false);
       bot.setControlState('forward', false);
       this.active = false;
-    }, 3000);
+    }, 1500);
   }
 
   async _triggerEat(food) {
