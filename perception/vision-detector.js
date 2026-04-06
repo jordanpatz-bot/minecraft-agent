@@ -17,12 +17,13 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-// Find best available model (v6 mAP 0.661 > v3 0.52 > v5 0.084)
+// Find best available model
+// v7 (mc_entities_v6/best.pt): mAP 0.795 on 5 classes (best for common mobs)
+// v8 (mc_entities_v8/best.pt): mAP 0.569 on 12 classes (best coverage)
 const MODEL_CANDIDATES = [
+  path.join(__dirname, '..', 'runs', 'detect', 'mc_entities_v8', 'weights', 'best.pt'),
   path.join(__dirname, '..', 'runs', 'detect', 'mc_entities_v6', 'weights', 'best.pt'),
   path.join(__dirname, '..', 'runs', 'detect', 'runs', 'detect', 'mc_entities_v3', 'weights', 'best.pt'),
-  path.join(__dirname, '..', 'runs', 'detect', 'mc_entities_v5', 'weights', 'best.pt'),
-  path.join(__dirname, '..', 'runs', 'detect', 'runs', 'detect', 'mc_entities_v2', 'weights', 'best.pt'),
 ];
 const MODEL_PATH = MODEL_CANDIDATES.find(p => fs.existsSync(p)) || MODEL_CANDIDATES[MODEL_CANDIDATES.length - 1];
 const CLASS_NAMES = ['Zombie', 'Skeleton', 'Creeper', 'Spider', 'Slime', 'Enderman', 'Witch', 'Cow', 'Pig', 'Sheep', 'Chicken', 'Squid', 'Cod', 'Item', 'Villager'];
