@@ -21,7 +21,8 @@ const { ReflexTier } = require('./core/reflex');
 const args = process.argv.slice(2);
 const HOST = args.find((_, i, a) => a[i-1] === '--host') || 'localhost';
 const PORT = parseInt(args.find((_, i, a) => a[i-1] === '--port') || '25565');
-const MAX_TURNS = parseInt(args.find((_, i, a) => a[i-1] === '--turns') || '20');
+const MAX_TURNS = parseInt(args.find((_, i, a) => a[i-1] === '--turns') || '50');
+const BOT_USERNAME = args.find((_, i, a) => a[i-1] === '--name') || undefined;
 const CAPTURE = args.includes('--capture');
 const VISION_MODE = args.includes('--vision');
 const VISION_ONLY = args.includes('--vision-only');
@@ -62,7 +63,7 @@ Respond with ONLY a JSON object:
 async function main() {
   console.log(`[AGENT] Minecraft agent starting (${MAX_TURNS} turns)${VISION_MODE ? ' [VISION]' : ''}${VISION_ONLY ? ' [VISION-ONLY]' : ''}`);
 
-  const agent = await createAgent({ host: HOST, port: PORT });
+  const agent = await createAgent({ host: HOST, port: PORT, ...(BOT_USERNAME ? { username: BOT_USERNAME } : {}) });
   const bot = agent.bot;
   const llm = new LLMProvider({ provider: 'claude', model: 'haiku' });
   const library = new SkillLibrary();
@@ -121,11 +122,15 @@ async function main() {
 
   // Chat history and stuck tracking
   const chatHistory = [];
+  let pendingChat = null; // human message that needs a response
   let lastPos = null;
   let stuckCount = 0;
   bot.on('chat', (username, message) => {
     if (username !== bot.username) {
       chatHistory.push({ from: username, message, time: Date.now() });
+      // Flag as needing response — human player said something
+      pendingChat = { from: username, message, time: Date.now() };
+      console.log(`[CHAT] ${username}: ${message}`);
     }
   });
 
@@ -251,6 +256,13 @@ async function main() {
     lastPos = { ...state.player.position };
     const stuckWarning = stuckCount >= 3 ? `\nWARNING: You have been STUCK for ${stuckCount} turns. Try a different direction or learn a movement skill.` : '';
 
+    // --- Chat priority: if a human said something, include it prominently ---
+    let chatPriority = '';
+    if (pendingChat && Date.now() - pendingChat.time < 30000) {
+      chatPriority = `\nIMPORTANT — ${pendingChat.from} just said: "${pendingChat.message}"\nYou MUST respond to this via chat action or acknowledge it in your reasoning. Be helpful and friendly.`;
+      pendingChat = null; // consumed
+    }
+
     // --- Strategy tier (LLM decision) ---
     const skillList = library.list().map(s => `${s.name}${s.failCount > 0 ? ' (BROKEN)' : ''}: ${s.description}`).join('\n  ');
     const prompt = STRATEGY_PROMPT.replace('{SKILLS}', skillList || 'none');
@@ -280,7 +292,7 @@ ${(() => {
     return `Audio threats: ${threatDescs}`;
   }
   return audioSummary.totalSounds > 0 ? `Ambient sounds: ${audioSummary.totalSounds} in last 10s` : '';
-})()}`;
+})()}${chatPriority}`;
 
     console.log('[THINK] Asking LLM...');
     try {
