@@ -4,3 +4,11 @@ node_modules/
 server/
 data/
 
+# Training artifacts (keep weights, ignore visualizations)
+runs/detect/*/train_batch*.jpg
+runs/detect/*/val_batch*.jpg
+runs/detect/*/labels.jpg
+runs/detect/*/*.png
+runs/detect/*/weights/last.pt
+runs/detect/val*/
+
