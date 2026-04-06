@@ -17,7 +17,15 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-const MODEL_PATH = path.join(__dirname, '..', 'runs', 'detect', 'runs', 'detect', 'mc_entities_v2', 'weights', 'best.pt');
+// Find best available model (v3 has highest mAP at 0.52, v5 at 0.084 due to label noise)
+const MODEL_CANDIDATES = [
+  path.join(__dirname, '..', 'runs', 'detect', 'runs', 'detect', 'mc_entities_v3', 'weights', 'best.pt'),
+  path.join(__dirname, '..', 'runs', 'detect', 'mc_entities_v5', 'weights', 'best.pt'),
+  path.join(__dirname, '..', 'runs', 'detect', 'runs', 'detect', 'mc_entities_v4', 'weights', 'best.pt'),
+  path.join(__dirname, '..', 'runs', 'detect', 'runs', 'detect', 'mc_entities_v2', 'weights', 'best.pt'),
+  path.join(__dirname, '..', 'runs', 'detect', 'runs', 'detect', 'minecraft_entities', 'weights', 'best.pt'),
+];
+const MODEL_PATH = MODEL_CANDIDATES.find(p => fs.existsSync(p)) || MODEL_CANDIDATES[MODEL_CANDIDATES.length - 1];
 const CLASS_NAMES = ['Zombie', 'Skeleton', 'Creeper', 'Spider', 'Slime', 'Enderman', 'Witch', 'Cow', 'Pig', 'Sheep', 'Chicken', 'Squid', 'Cod', 'Item', 'Villager'];
 
 class VisionDetector {

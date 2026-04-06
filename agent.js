@@ -8,7 +8,7 @@
  * - Skill tier: LLM-written skills for composed tasks
  * - Strategy tier: periodic LLM planning for high-level goals
  *
- * Usage: node agent.js [--host HOST] [--port PORT] [--turns N] [--capture]
+ * Usage: node agent.js [--host HOST] [--port PORT] [--turns N] [--capture] [--vision] [--vision-only]
  */
 
 const { createAgent } = require('./core/bot');
@@ -23,6 +23,8 @@ const HOST = args.find((_, i, a) => a[i-1] === '--host') || 'localhost';
 const PORT = parseInt(args.find((_, i, a) => a[i-1] === '--port') || '25565');
 const MAX_TURNS = parseInt(args.find((_, i, a) => a[i-1] === '--turns') || '20');
 const CAPTURE = args.includes('--capture');
+const VISION_MODE = args.includes('--vision');
+const VISION_ONLY = args.includes('--vision-only');
 
 const STRATEGY_PROMPT = `You are an autonomous Minecraft agent. Analyze the current game state and decide what to do.
 
@@ -58,7 +60,7 @@ Respond with ONLY a JSON object:
 }`;
 
 async function main() {
-  console.log(`[AGENT] Minecraft agent starting (${MAX_TURNS} turns)`);
+  console.log(`[AGENT] Minecraft agent starting (${MAX_TURNS} turns)${VISION_MODE ? ' [VISION]' : ''}${VISION_ONLY ? ' [VISION-ONLY]' : ''}`);
 
   const agent = await createAgent({ host: HOST, port: PORT });
   const bot = agent.bot;
@@ -72,6 +74,37 @@ async function main() {
     const capture = new StateCapture(agent);
     capture.start(3.0);
     process.on('exit', () => capture.stop());
+  }
+
+  // --- Vision setup ---
+  let visionPerception = null;
+  let viewerPage = null;
+  let viewerBrowser = null;
+
+  if (VISION_MODE || VISION_ONLY) {
+    const { VisionPerception } = require('./perception/vision-perception');
+    visionPerception = new VisionPerception();
+
+    // Start prismarine-viewer
+    const { mineflayer: viewer } = require('prismarine-viewer');
+    viewer(bot, { port: 3003, firstPerson: true });
+    await sleep(2000);
+
+    // Launch headless browser (Playwright for WebGL support)
+    const { chromium } = require('playwright');
+    viewerBrowser = await chromium.launch({
+      headless: true,
+      args: ['--enable-webgl', '--ignore-gpu-blocklist'],
+    });
+    const viewerContext = await viewerBrowser.newContext({ viewport: { width: 1280, height: 720 } });
+    viewerPage = await viewerContext.newPage();
+    await viewerPage.goto('http://localhost:3003', { waitUntil: 'networkidle', timeout: 15000 });
+    await sleep(5000);
+    console.log('[VISION] Viewer + Playwright ready');
+
+    process.on('exit', async () => {
+      try { await viewerBrowser.close(); } catch {}
+    });
   }
 
   // Wait for chunks
@@ -98,6 +131,46 @@ async function main() {
     console.log('═'.repeat(50));
 
     const state = agent.getState();
+
+    // --- Vision perception ---
+    if (visionPerception && viewerPage) {
+      try {
+        const visionState = await visionPerception.perceiveLive(viewerPage);
+        const visionEntities = visionState.entities || [];
+
+        if (VISION_ONLY) {
+          // Replace API entities with vision-only detections
+          state.entities = visionEntities;
+          state._visionOnly = true;
+        } else {
+          // Merge: annotate API entities with vision confirmation
+          for (const apiEnt of state.entities) {
+            const match = visionEntities.find(v => v.name === apiEnt.name);
+            if (match) {
+              apiEnt._visionConfirmed = true;
+              apiEnt._visionConfidence = match.confidence;
+              apiEnt._visionBbox = match.bbox;
+            }
+          }
+          // Add vision-only detections (entities YOLO sees but API missed)
+          for (const vEnt of visionEntities) {
+            const alreadyInAPI = state.entities.find(a => a.name === vEnt.name);
+            if (!alreadyInAPI) {
+              state.entities.push({
+                ...vEnt,
+                _visionOnly: true,
+              });
+            }
+          }
+          state._visionActive = true;
+        }
+
+        console.log(`[VISION] Detected ${visionEntities.length} entities: ${visionEntities.map(e => `${e.name}(${e.confidence})`).join(', ') || 'none'}`);
+      } catch (err) {
+        console.log(`[VISION] Error: ${err.message.slice(0, 80)}`);
+      }
+    }
+
     console.log(`[STATE] HP:${state.player.health}/20 Food:${state.player.food}/20 ` +
       `Pos:(${state.player.position.x},${state.player.position.y},${state.player.position.z}) ` +
       `${state.world.isDay ? 'Day' : 'NIGHT'} ${state.world.weather}`);
@@ -129,7 +202,12 @@ Health: ${state.player.health}/20, Food: ${state.player.food}/20
 Time: ${state.world.isDay ? 'Day' : 'Night'}, Weather: ${state.world.weather}
 Inventory: ${state.inventory.map(i => `${i.name}x${i.count}`).join(', ') || 'empty'}
 Equipment: ${JSON.stringify(state.equipment)}
-Nearby entities: ${state.entities.slice(0, 8).map(e => `${e.name}(${e.distance}m${e.hostile ? ',HOSTILE' : ''})`).join(', ') || 'none'}
+Nearby entities: ${state.entities.slice(0, 8).map(e => {
+  let desc = `${e.name}(${e.distance}m${e.hostile ? ',HOSTILE' : ''}`;
+  if (e._visionConfirmed) desc += `,vis:${e._visionConfidence}`;
+  if (e._visionOnly) desc += `,vision-only:${e.confidence || '?'}`;
+  return desc + ')';
+}).join(', ') || 'none'}
 Nearby blocks: ${summarizeBlocks(state.nearbyBlocks)}
 ${chatHistory.length > 0 ? 'Recent chat: ' + chatHistory.slice(-3).map(c => `${c.from}: ${c.message}`).join(' | ') : ''}${stuckWarning}`;
 

@@ -69,7 +69,7 @@ class VisionPerception {
 
   /**
    * Run perception on a live viewer, returning vision state.
-   * @param {object} page — puppeteer page connected to prismarine-viewer
+   * @param {object} page — Playwright or Puppeteer page connected to prismarine-viewer
    * @returns {Promise<object>} vision state
    */
   async perceiveLive(page) {
