@@ -170,6 +170,43 @@ async function main() {
           state._visionActive = true;
         }
 
+        // --- Audio-vision fusion: use sounds to confirm/boost visual detections ---
+        const audioThreats = audioCapture.getThreatEvents(3000);
+        if (audioThreats.length > 0) {
+          // Map audio threats to expected entity names
+          const audioMobMap = {
+            zombie: 'Zombie', skeleton: 'Skeleton', creeper: 'Creeper',
+            spider: 'Spider', enderman: 'Enderman', witch: 'Witch',
+            slime: 'Slime', phantom: 'Phantom',
+          };
+
+          for (const threat of audioThreats) {
+            const expectedName = audioMobMap[threat.threatInfo?.mob];
+            if (!expectedName) continue;
+
+            // Find matching visual detection
+            const visualMatch = state.entities.find(e =>
+              e.name === expectedName && e._visionConfidence
+            );
+            if (visualMatch) {
+              // Boost confidence when both vision and audio agree
+              visualMatch._audioConfirmed = true;
+              visualMatch._audioDirection = threat.direction;
+              visualMatch._boostedConfidence = Math.min(0.99, (visualMatch._visionConfidence || 0.5) + 0.2);
+            } else {
+              // Audio detected something vision didn't see (off-screen)
+              state.entities.push({
+                name: expectedName,
+                distance: threat.distance,
+                hostile: true,
+                _audioOnly: true,
+                _audioDirection: threat.direction,
+                _audioUrgency: threat.threatInfo?.urgency,
+              });
+            }
+          }
+        }
+
         console.log(`[VISION] Detected ${visionEntities.length} entities: ${visionEntities.map(e => `${e.name}(${e.confidence})`).join(', ') || 'none'}`);
       } catch (err) {
         console.log(`[VISION] Error: ${err.message.slice(0, 80)}`);
@@ -210,7 +247,9 @@ Equipment: ${JSON.stringify(state.equipment)}
 Nearby entities: ${state.entities.slice(0, 8).map(e => {
   let desc = `${e.name}(${e.distance}m${e.hostile ? ',HOSTILE' : ''}`;
   if (e._visionConfirmed) desc += `,vis:${e._visionConfidence}`;
+  if (e._audioConfirmed) desc += `,audio+vis:${e._boostedConfidence}`;
   if (e._visionOnly) desc += `,vision-only:${e.confidence || '?'}`;
+  if (e._audioOnly) desc += `,audio-only:${e._audioDirection}`;
   return desc + ')';
 }).join(', ') || 'none'}
 Nearby blocks: ${summarizeBlocks(state.nearbyBlocks)}

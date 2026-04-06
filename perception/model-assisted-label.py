@@ -33,7 +33,10 @@ VISUALIZE = '--visualize' in sys.argv
 CONF_THRESHOLD = float(next((sys.argv[i+1] for i, a in enumerate(sys.argv) if a == '--conf'), '0.15'))
 
 # Best model
-MODEL_PATH = PROJ_DIR / 'runs' / 'detect' / 'runs' / 'detect' / 'mc_entities_v3' / 'weights' / 'best.pt'
+# Use best available model (v6 mAP 0.661 > v3 0.52)
+_v6 = PROJ_DIR / 'runs' / 'detect' / 'mc_entities_v6' / 'weights' / 'best.pt'
+_v3 = PROJ_DIR / 'runs' / 'detect' / 'runs' / 'detect' / 'mc_entities_v3' / 'weights' / 'best.pt'
+MODEL_PATH = _v6 if _v6.exists() else _v3
 
 CLASS_NAMES = ['Zombie', 'Skeleton', 'Creeper', 'Spider', 'Slime',
                'Enderman', 'Witch', 'Cow', 'Pig', 'Sheep',
@@ -94,13 +97,21 @@ def process_frames():
             print(f"[SKIP] {cap_dir}")
             continue
 
-        frames = sorted(cap_dir.glob('frame_*.jpg'))
+        # Find all frames (both original and agent-prefixed)
+        frames = sorted(cap_dir.glob('*frame_*.jpg'))
         print(f"\n[DIR] {cap_dir.name}: {len(frames)} frames")
 
         dir_labels = 0
         for frame_path in frames:
-            idx = frame_path.stem.replace('frame_', '')
-            state_path = cap_dir / f'state_{idx}.json'
+            # Extract prefix and index from filename like "a0_frame_00001.jpg" or "frame_00001.jpg"
+            stem = frame_path.stem
+            if '_frame_' in stem:
+                prefix, _, idx = stem.partition('_frame_')
+                prefix += '_'
+            else:
+                prefix = ''
+                idx = stem.replace('frame_', '')
+            state_path = cap_dir / f'{prefix}state_{idx}.json'
             if not state_path.exists():
                 continue
 
