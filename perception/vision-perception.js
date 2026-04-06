@@ -13,12 +13,14 @@
  */
 
 const { VisionDetector } = require('./vision-detector');
+const { BlockDetector } = require('./block-detector');
 const fs = require('fs');
 const path = require('path');
 
 class VisionPerception {
   constructor(opts = {}) {
     this.detector = new VisionDetector(opts);
+    this.blockDetector = new BlockDetector(opts.blockOpts || {});
     this.lastFrame = null;
     this.lastState = null;
   }
@@ -29,10 +31,13 @@ class VisionPerception {
    * @returns {Promise<object>} state in the same format as bot.getState()
    */
   async perceive(framePath) {
-    // Entity detection
-    const detections = await this.detector.detect(framePath);
+    // Run entity and block detection in parallel
+    const [detections, blockDetections] = await Promise.all([
+      this.detector.detect(framePath),
+      this.blockDetector.detect(framePath).catch(() => []),
+    ]);
 
-    // Convert detections to entity format matching Mineflayer
+    // Convert entity detections to Mineflayer-compatible format
     const entities = detections.map((d, i) => ({
       type: 'mob',
       name: d.name,
@@ -42,6 +47,18 @@ class VisionPerception {
       hostile: d.hostile,
       confidence: d.confidence,
       bbox: { x1: d.x1, y1: d.y1, x2: d.x2, y2: d.y2 },
+    }));
+
+    // Convert block detections to structured format
+    const visibleBlocks = blockDetections.map(b => ({
+      name: b.name,
+      confidence: b.confidence,
+      isResource: b.isResource,
+      isDanger: b.isDanger,
+      bbox: { x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 },
+      // Estimate screen position (center of bbox)
+      screenX: (b.x1 + b.x2) / 2,
+      screenY: (b.y1 + b.y2) / 2,
     }));
 
     // Time of day from sky color analysis
@@ -56,11 +73,11 @@ class VisionPerception {
       },
       world: {
         isDay: timeInfo.isDay,
-        timePhase: timeInfo.phase, // 'dawn', 'day', 'dusk', 'night'
+        timePhase: timeInfo.phase,
         skyBrightness: timeInfo.brightness,
       },
       entities,
-      nearbyBlocks: [], // TODO: block classifier from terrain textures
+      nearbyBlocks: visibleBlocks,
       inventory: [], // requires Mineflayer API, not visible in viewer
       equipment: {},
     };
