@@ -110,13 +110,20 @@ end tell'`, { timeout: 5000 }).toString().trim();
  */
 function captureWindow(windowId, outputPath) {
   try {
+    // screencapture -l always outputs PNG regardless of extension
+    // Capture as PNG then keep as-is (YOLO handles both formats)
+    const pngPath = outputPath.replace('.jpg', '.png');
     if (windowId) {
-      execSync(`screencapture -l ${windowId} -x "${outputPath}"`, { timeout: 5000 });
+      execSync(`screencapture -l ${windowId} -x "${pngPath}"`, { timeout: 5000 });
     } else {
-      // Fallback: capture entire screen
-      execSync(`screencapture -x "${outputPath}"`, { timeout: 5000 });
+      execSync(`screencapture -x "${pngPath}"`, { timeout: 5000 });
     }
-    return true;
+    // Rename to .jpg for consistency with rest of pipeline
+    if (fs.existsSync(pngPath)) {
+      fs.renameSync(pngPath, outputPath);
+      return true;
+    }
+    return false;
   } catch {
     return false;
   }
