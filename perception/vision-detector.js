@@ -26,7 +26,7 @@ const MODEL_CANDIDATES = [
   path.join(__dirname, '..', 'runs', 'detect', 'runs', 'detect', 'mc_entities_v3', 'weights', 'best.pt'),
 ];
 const MODEL_PATH = MODEL_CANDIDATES.find(p => fs.existsSync(p)) || MODEL_CANDIDATES[MODEL_CANDIDATES.length - 1];
-const CLASS_NAMES = ['Zombie', 'Skeleton', 'Creeper', 'Spider', 'Slime', 'Enderman', 'Witch', 'Cow', 'Pig', 'Sheep', 'Chicken', 'Squid', 'Cod', 'Item', 'Villager'];
+const CLASS_NAMES = ['Zombie', 'Skeleton', 'Creeper', 'Spider', 'Slime', 'Enderman', 'Witch', 'Cow', 'Pig', 'Sheep', 'Chicken', 'Squid', 'Cod', 'Item', 'Villager', 'Player'];
 
 class VisionDetector {
   constructor(opts = {}) {
@@ -64,7 +64,8 @@ for r in results:
                 'y1': round(xyxy[1], 1),
                 'x2': round(xyxy[2], 1),
                 'y2': round(xyxy[3], 1),
-                'hostile': cls < 7,  # classes 0-6 are hostile
+                'hostile': cls < 7,  # classes 0-6 are hostile mobs
+                'isPlayer': cls == 15,
             })
 
 print(json.dumps(detections))

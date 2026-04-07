@@ -27,6 +27,8 @@ CAPTURE_DIRS = [
     PROJ_DIR / 'data' / 'captures',
     PROJ_DIR / 'data' / 'gameplay_captures',
     PROJ_DIR / 'data' / 'entity_captures',
+    PROJ_DIR / 'data' / 'balanced_captures',
+    PROJ_DIR / 'data' / 'client_captures',
 ]
 LABEL_DIR = PROJ_DIR / 'data' / 'labels_v6'
 VISUALIZE = '--visualize' in sys.argv
@@ -40,7 +42,7 @@ MODEL_PATH = _v6 if _v6.exists() else _v3
 
 CLASS_NAMES = ['Zombie', 'Skeleton', 'Creeper', 'Spider', 'Slime',
                'Enderman', 'Witch', 'Cow', 'Pig', 'Sheep',
-               'Chicken', 'Squid', 'Cod', 'Item', 'Villager']
+               'Chicken', 'Squid', 'Cod', 'Item', 'Villager', 'Player']
 
 # Map ground truth entity names to class indices
 ENTITY_TO_CLASS = {}
@@ -51,6 +53,7 @@ ENTITY_TO_CLASS.update({
     'cave_spider': 3, 'husk': 0, 'drowned': 0, 'stray': 1,
     'salmon': 12, 'tropical_fish': 12, 'pufferfish': 12,
     'zombie_villager': 0,
+    'player': 15,
 })
 
 
@@ -62,6 +65,10 @@ def get_visible_classes(state):
         name = (ent.get('name', '') or '').lower().replace(' ', '_')
         dist = ent.get('distance', 100)
         if dist > 30:  # too far to reliably see
+            continue
+        # Check if it's a player entity
+        if ent.get('isPlayer') or ent.get('type') == 'player':
+            visible.add(15)  # Player class
             continue
         if name in ENTITY_TO_CLASS:
             visible.add(ENTITY_TO_CLASS[name])
