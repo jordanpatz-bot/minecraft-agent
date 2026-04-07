@@ -73,6 +73,17 @@ fi
 node perception/capture-client.js --frames 500 --interval 3 $FOLLOW_FLAG 2>&1 | tee /tmp/mc-client-capture.log &
 CLIENT_PID=$!
 
+# Set capture bot to creative (can't die)
+sleep 5
+node -e "
+const { Rcon } = require('rcon-client');
+Rcon.connect({host:'localhost',port:25575,password:'botadmin'}).then(async r => {
+  await r.send('gamemode creative ClientCapBot');
+  await r.send('effect give $BOT_NAME resistance 99999 255 true');
+  await r.end();
+}).catch(() => {});
+" &
+
 echo ""
 echo "═══════════════════════════════════════════"
 echo "  READY — Play Minecraft and chat with $BOT_NAME!"
