@@ -2,10 +2,10 @@ task: detect
 mode: train
 model: yolov8n.pt
 data: /Users/jordanpatz/minecraft-agent/data/yolo_v8/dataset.yaml
-epochs: 100
+epochs: 80
 time: null
 patience: 20
-batch: 16
+batch: 8
 imgsz: 640
 save: true
 save_period: -1
