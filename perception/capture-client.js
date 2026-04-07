@@ -133,9 +133,10 @@ async function main() {
     console.log('[WARN] Make sure Minecraft is running and visible');
   }
 
-  // Connect bot for state ground truth
+  // Connect bot for state ground truth (unique name to avoid duplicate login kicks)
+  const botName = 'Cam_' + Math.random().toString(36).slice(2, 5);
   const bot = mineflayer.createBot({
-    host: 'localhost', port: 25565, username: 'ClientCapBot',
+    host: 'localhost', port: 25565, username: botName,
     checkTimeoutInterval: 60000,
   });
   bot.on('error', e => console.log('[BOT ERR]', e.message));
@@ -144,13 +145,13 @@ async function main() {
 
   // IMMEDIATELY set creative mode so bot can't die
   const rcon = await Rcon.connect({ host: 'localhost', port: 25575, password: 'botadmin' });
-  await rcon.send('gamemode creative ClientCapBot');
+  await rcon.send(`gamemode creative ${botName}`);
   await sleep(1000);
   console.log('[CAPTURE BOT] Creative mode set — invincible');
 
   // If following a player, teleport bot to them
   if (FOLLOW_PLAYER) {
-    await rcon.send(`tp ClientCapBot ${FOLLOW_PLAYER}`);
+    await rcon.send(`tp ${botName} ${FOLLOW_PLAYER}`);
     await sleep(2000);
     console.log(`[FOLLOW] Teleported to ${FOLLOW_PLAYER}`);
   }
@@ -178,7 +179,7 @@ async function main() {
       if (player && player.position) {
         const dist = bot.entity.position.distanceTo(player.position);
         if (dist > 20) {
-          try { await rcon.send(`tp ClientCapBot ${FOLLOW_PLAYER}`); } catch {}
+          try { await rcon.send(`tp ${botName} ${FOLLOW_PLAYER}`); } catch {}
           await sleep(1000);
         }
         // Look where the player looks for similar viewport
