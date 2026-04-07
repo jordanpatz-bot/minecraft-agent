@@ -27,38 +27,47 @@ const CAPTURE = args.includes('--capture');
 const VISION_MODE = args.includes('--vision');
 const VISION_ONLY = args.includes('--vision-only');
 
-const STRATEGY_PROMPT = `You are an autonomous Minecraft agent. Analyze the current game state and decide what to do.
+const STRATEGY_PROMPT = `You are an autonomous Minecraft agent named {BOT_NAME}. You set high-level BEHAVIORS that run continuously, not individual actions.
 
-You have a skill library with these skills: {SKILLS}
+AVAILABLE BEHAVIORS:
+1. follow — Follow a player: {"action": "behavior", "behavior": "follow", "params": {"target": "playerName", "range": 4, "onIdle": "gather"}}
+2. gather — Collect resources: {"action": "behavior", "behavior": "gather", "params": {"resource": "log|stone|ore|any", "count": 10}}
+3. explore — Explore terrain: {"action": "behavior", "behavior": "explore", "params": {"direction": "north|south|east|west|random"}}
+4. hunt — Fight hostile mobs: {"action": "behavior", "behavior": "hunt", "params": {"targets": ["zombie","skeleton","spider"]}}
+5. idle — Stand still, look around: {"action": "behavior", "behavior": "idle"}
 
-AVAILABLE ACTIONS:
-1. Use an existing skill: {"action": "skill", "name": "skillName", "params": {}}
-2. Request a new skill: {"action": "learn", "goal": "natural language description of what to do"}
-3. Simple movement: {"action": "move", "direction": "forward|back|left|right", "duration": 2}
-4. Chat: {"action": "chat", "message": "text"}
-5. Wait/observe: {"action": "wait", "duration": 3}
+OTHER ACTIONS (one-time, not continuous):
+6. Use a skill: {"action": "skill", "name": "skillName", "params": {}}
+7. Chat to players: {"action": "chat", "message": "text"}
+8. Learn a new skill: {"action": "learn", "goal": "description"}
+
+SKILLS AVAILABLE: {SKILLS}
+
+CRAFTING PROGRESSION: gatherWood → craftPlanks → craftCraftingTable → craftWoodenPickaxe → mineStone
+
+HOW BEHAVIORS WORK:
+- Behaviors run CONTINUOUSLY at tick speed without your involvement
+- You only get called when: a player chats, situation changes, behavior completes, or timer fires
+- Set a behavior and it keeps running until you change it
+- "follow" with "onIdle": "gather" means follow the player but gather wood when they stop moving
+- Use "skill" for one-time crafting actions, then go back to a behavior
 
 PRIORITIES:
-1. Survive: eat if hungry (food < 15), flee if hostile mob nearby
-2. ALWAYS use skills when available — prefer "skill" over "move" or "learn"
-3. Crafting progression: gatherWood → craftPlanks → craftCraftingTable → craftWoodenPickaxe → mineStone
-4. If stuck on movement, use "skill" with "exploreForward" or "gatherWood" (they handle navigation internally)
-5. Only use "move" for fine positioning. Never spam "move" more than 2 turns in a row.
-6. Use "learn" only when no existing skill covers the goal
-
-CRAFTING CHAIN (follow this order):
-- Need logs? → skill: gatherWood (params: {count: 5})
-- Have logs? → skill: craftPlanks
-- Have 4+ planks? → skill: craftCraftingTable
-- Have crafting table + planks? → skill: craftWoodenPickaxe
-- Have pickaxe? → skill: mineStone
+1. If a player talks to you, ALWAYS respond with a chat action first, then set behavior
+2. Survival is handled automatically (flee, eat) — don't worry about it
+3. When near players, prefer "follow" behavior
+4. When alone, prefer "gather" or "explore"
 
 Respond with ONLY a JSON object:
 {
-  "reasoning": "what you observe and why you're choosing this action",
-  "action": "skill|learn|move|chat|wait",
+  "reasoning": "brief situation assessment",
+  "action": "behavior|skill|chat|learn",
   ... action-specific fields
 }`;
+
+// How often to call the LLM (ms) — behaviors run between calls
+const LLM_INTERVAL = 30000; // 30 seconds
+const LLM_CHAT_PRIORITY_INTERVAL = 5000; // 5s if player chatted
 
 async function main() {
   console.log(`[AGENT] Minecraft agent starting (${MAX_TURNS} turns)${VISION_MODE ? ' [VISION]' : ''}${VISION_ONLY ? ' [VISION-ONLY]' : ''}`);
@@ -120,298 +129,169 @@ async function main() {
   const reflex = new ReflexTier(bot, { audioCapture });
   reflex.start();
 
-  // Chat history and stuck tracking
+  // Start behavior engine
+  const { BehaviorEngine } = require('./core/behaviors');
+  const behaviors = new BehaviorEngine(bot);
+  behaviors.start();
+
+  // Chat history
   const chatHistory = [];
-  let pendingChat = null; // human message that needs a response
-  let lastPos = null;
-  let stuckCount = 0;
+  let pendingChat = null;
   bot.on('chat', (username, message) => {
     if (username !== bot.username) {
       chatHistory.push({ from: username, message, time: Date.now() });
-      // Flag as needing response — human player said something
       pendingChat = { from: username, message, time: Date.now() };
       console.log(`[CHAT] ${username}: ${message}`);
     }
   });
 
-  // --- Main loop ---
-  for (let turn = 1; turn <= MAX_TURNS; turn++) {
+  // --- Event-driven main loop ---
+  // LLM gets called on: chat, behavior change needed, timer
+  let llmCallCount = 0;
+  let lastLLMCall = 0;
+  const maxCalls = MAX_TURNS;
+  const sessionStart = Date.now();
+  const maxSessionMs = maxCalls * LLM_INTERVAL * 2; // rough session limit
+
+  async function callLLM(reason) {
+    if (llmCallCount >= maxCalls) return;
+    llmCallCount++;
+    lastLLMCall = Date.now();
+
     console.log(`\n${'═'.repeat(50)}`);
-    console.log(`[TURN ${turn}/${MAX_TURNS}]`);
+    console.log(`[STRATEGY ${llmCallCount}/${maxCalls}] Reason: ${reason}`);
     console.log('═'.repeat(50));
 
     const state = agent.getState();
 
-    // --- Position recovery: if NaN, teleport to safety via RCON ---
+    // Position recovery
     if (state._positionInvalid) {
-      console.log('[RECOVER] Position is NaN — teleporting to safety');
+      console.log('[RECOVER] Position is NaN — teleporting');
       try {
         const { Rcon } = require('rcon-client');
         const rcon = await Rcon.connect({ host: 'localhost', port: 25575, password: 'botadmin' });
         await rcon.send(`spreadplayers 0 0 0 200 false ${bot.username}`);
         await rcon.end();
-        await sleep(3000);
-        console.log('[RECOVER] Teleported, waiting for chunks...');
-        await sleep(2000);
-      } catch (e) {
-        console.log('[RECOVER] RCON failed:', e.message);
-      }
-      continue; // skip this turn, let position stabilize
+      } catch {}
+      await sleep(3000);
+      return;
     }
 
-    // --- Vision perception ---
-    if (visionPerception && viewerPage) {
-      try {
-        const visionState = await visionPerception.perceiveLive(viewerPage);
-        const visionEntities = visionState.entities || [];
-
-        if (VISION_ONLY) {
-          // Replace API entities with vision-only detections
-          state.entities = visionEntities;
-          state._visionOnly = true;
-        } else {
-          // Merge: annotate API entities with vision confirmation
-          for (const apiEnt of state.entities) {
-            const match = visionEntities.find(v => v.name === apiEnt.name);
-            if (match) {
-              apiEnt._visionConfirmed = true;
-              apiEnt._visionConfidence = match.confidence;
-              apiEnt._visionBbox = match.bbox;
-            }
-          }
-          // Add vision-only detections (entities YOLO sees but API missed)
-          for (const vEnt of visionEntities) {
-            const alreadyInAPI = state.entities.find(a => a.name === vEnt.name);
-            if (!alreadyInAPI) {
-              state.entities.push({
-                ...vEnt,
-                _visionOnly: true,
-              });
-            }
-          }
-          state._visionActive = true;
-        }
-
-        // --- Audio-vision fusion: use sounds to confirm/boost visual detections ---
-        const audioThreats = audioCapture.getThreatEvents(3000);
-        if (audioThreats.length > 0) {
-          // Map audio threats to expected entity names
-          const audioMobMap = {
-            zombie: 'Zombie', skeleton: 'Skeleton', creeper: 'Creeper',
-            spider: 'Spider', enderman: 'Enderman', witch: 'Witch',
-            slime: 'Slime', phantom: 'Phantom',
-          };
-
-          for (const threat of audioThreats) {
-            const expectedName = audioMobMap[threat.threatInfo?.mob];
-            if (!expectedName) continue;
-
-            // Find matching visual detection
-            const visualMatch = state.entities.find(e =>
-              e.name === expectedName && e._visionConfidence
-            );
-            if (visualMatch) {
-              // Boost confidence when both vision and audio agree
-              visualMatch._audioConfirmed = true;
-              visualMatch._audioDirection = threat.direction;
-              visualMatch._boostedConfidence = Math.min(0.99, (visualMatch._visionConfidence || 0.5) + 0.2);
-            } else {
-              // Audio detected something vision didn't see (off-screen)
-              state.entities.push({
-                name: expectedName,
-                distance: threat.distance,
-                hostile: true,
-                _audioOnly: true,
-                _audioDirection: threat.direction,
-                _audioUrgency: threat.threatInfo?.urgency,
-              });
-            }
-          }
-        }
-
-        console.log(`[VISION] Detected ${visionEntities.length} entities: ${visionEntities.map(e => `${e.name}(${e.confidence})`).join(', ') || 'none'}`);
-      } catch (err) {
-        console.log(`[VISION] Error: ${err.message.slice(0, 80)}`);
-      }
-    }
-
+    const behaviorStatus = behaviors.getStatus();
     console.log(`[STATE] HP:${state.player.health}/20 Food:${state.player.food}/20 ` +
-      `Pos:(${state.player.position.x},${state.player.position.y},${state.player.position.z}) ` +
-      `${state.world.isDay ? 'Day' : 'NIGHT'} ${state.world.weather}`);
+      `${state.world.isDay ? 'Day' : 'NIGHT'} | Behavior: ${behaviorStatus.description}`);
     console.log(`[STATE] Entities:${state.entities.length} Inv:${state.inventory.length} items`);
 
-    // --- Reflex tier (immediate, no LLM) ---
-    const reflex = checkReflexes(state, bot);
-    if (reflex) {
-      console.log(`[REFLEX] ${reflex.action}: ${reflex.reason}`);
-      await executeReflex(reflex, bot);
-      continue;
-    }
-
-    // --- Stuck detection ---
-    if (!lastPos) lastPos = state.player.position;
-    const moved = Math.abs(state.player.position.x - lastPos.x) + Math.abs(state.player.position.z - lastPos.z);
-    if (moved < 0.5) stuckCount++;
-    else stuckCount = 0;
-    lastPos = { ...state.player.position };
-    const stuckWarning = stuckCount >= 3 ? `\nWARNING: You have been STUCK for ${stuckCount} turns. Try a different direction or learn a movement skill.` : '';
-
-    // --- Chat priority: if a human said something, include it prominently ---
+    // Build chat priority
     let chatPriority = '';
     if (pendingChat && Date.now() - pendingChat.time < 30000) {
-      chatPriority = `\nIMPORTANT — ${pendingChat.from} just said: "${pendingChat.message}"\nYou MUST respond to this via chat action or acknowledge it in your reasoning. Be helpful and friendly.`;
-      pendingChat = null; // consumed
+      chatPriority = `\nIMPORTANT — ${pendingChat.from} just said: "${pendingChat.message}"\nRespond via chat action FIRST, then set a behavior. Be friendly and conversational.`;
+      pendingChat = null;
     }
 
-    // --- Strategy tier (LLM decision) ---
-    const skillList = library.list().map(s => `${s.name}${s.failCount > 0 ? ' (BROKEN)' : ''}: ${s.description}`).join('\n  ');
-    const prompt = STRATEGY_PROMPT.replace('{SKILLS}', skillList || 'none');
+    const skillList = library.list().map(s => `${s.name}: ${s.description}`).join('\n  ');
+    const prompt = STRATEGY_PROMPT
+      .replace('{SKILLS}', skillList || 'none')
+      .replace('{BOT_NAME}', bot.username);
 
     const stateStr = `GAME STATE:
 Position: (${state.player.position.x}, ${state.player.position.y}, ${state.player.position.z})
 Health: ${state.player.health}/20, Food: ${state.player.food}/20
 Time: ${state.world.isDay ? 'Day' : 'Night'}, Weather: ${state.world.weather}
+Current behavior: ${behaviorStatus.description} (running ${behaviorStatus.runningFor}s)
 Inventory: ${state.inventory.map(i => `${i.name}x${i.count}`).join(', ') || 'empty'}
 Equipment: ${JSON.stringify(state.equipment)}
-Nearby entities: ${state.entities.slice(0, 8).map(e => {
-  let desc = `${e.name}(${e.distance}m${e.hostile ? ',HOSTILE' : ''}`;
-  if (e._visionConfirmed) desc += `,vis:${e._visionConfidence}`;
-  if (e._audioConfirmed) desc += `,audio+vis:${e._boostedConfidence}`;
-  if (e._visionOnly) desc += `,vision-only:${e.confidence || '?'}`;
-  if (e._audioOnly) desc += `,audio-only:${e._audioDirection}`;
-  return desc + ')';
-}).join(', ') || 'none'}
+Nearby players: ${state.entities.filter(e => e.type === 'player').map(e => `${e.username || e.name}(${e.distance}m)`).join(', ') || 'none'}
+Nearby mobs: ${state.entities.filter(e => e.type !== 'player').slice(0, 6).map(e => `${e.name}(${e.distance}m${e.hostile ? ',HOSTILE' : ''})`).join(', ') || 'none'}
 Nearby blocks: ${summarizeBlocks(state.nearbyBlocks)}
-${chatHistory.length > 0 ? 'Recent chat: ' + chatHistory.slice(-3).map(c => `${c.from}: ${c.message}`).join(' | ') : ''}${stuckWarning}
+${chatHistory.slice(-5).map(c => `${c.from}: ${c.message}`).join('\n') || ''}
 ${(() => {
   const audioSummary = audioCapture.getSummary(10000);
   if (audioSummary.threatCount > 0) {
-    const threatDescs = Object.entries(audioSummary.threats)
-      .map(([mob, info]) => `${mob}(${info.direction},${info.closest}m,${info.urgency})`)
-      .join(', ');
-    return `Audio threats: ${threatDescs}`;
+    return `Audio: ${Object.entries(audioSummary.threats).map(([m, i]) => `${m}(${i.direction},${i.closest}m)`).join(', ')}`;
   }
-  return audioSummary.totalSounds > 0 ? `Ambient sounds: ${audioSummary.totalSounds} in last 10s` : '';
+  return '';
 })()}${chatPriority}`;
 
     console.log('[THINK] Asking LLM...');
     try {
       const response = await llm.call(prompt, stateStr);
       const decision = extractJSON(response);
+      if (!decision) { console.log('[THINK] Failed to parse'); return; }
 
-      if (!decision) {
-        console.log('[THINK] Failed to parse LLM response');
-        continue;
+      console.log(`[THINK] ${decision.reasoning?.slice(0, 120)}`);
+
+      // Execute the decision
+      if (decision.action === 'behavior') {
+        behaviors.setBehavior(decision.behavior, decision.params || {});
+      } else if (decision.action === 'chat') {
+        bot.chat(decision.message || 'Hello!');
+        console.log(`[CHAT OUT] ${decision.message}`);
+      } else if (decision.action === 'skill') {
+        // Pause behavior, run skill, resume
+        const prevBehavior = behaviors.behaviorName;
+        const prevParams = behaviors.currentBehavior?.params || {};
+        behaviors.setBehavior('idle');
+        const result = await library.execute(decision.name, bot, decision.params || {});
+        console.log(`[SKILL] ${decision.name}: ${result.success ? 'OK' : 'FAIL — ' + result.error}`);
+        // Resume previous behavior
+        behaviors.setBehavior(prevBehavior, prevParams);
+      } else if (decision.action === 'learn') {
+        behaviors.setBehavior('idle');
+        const state = agent.getState();
+        const result = await writer.writeAndVerify(decision.goal, bot, {
+          inventory: state.inventory, position: state.player.position, nearbyBlocks: state.nearbyBlocks,
+        });
+        console.log(`[LEARN] ${result.success ? 'Stored: ' + result.skill?.name : 'Failed: ' + result.error}`);
       }
-
-      console.log(`[THINK] ${decision.reasoning?.slice(0, 100)}`);
-      console.log(`[ACTION] ${decision.action}: ${JSON.stringify(decision).slice(0, 150)}`);
-
-      await executeAction(decision, bot, agent, writer, library);
     } catch (err) {
       console.error(`[ERROR] ${err.message}`);
     }
-
-    await sleep(1000);
   }
 
-  console.log('\n[AGENT] Session complete.');
-  process.exit(0);
+  // --- Main event loop ---
+  console.log('[AGENT] Behavior engine running. LLM called on events.');
+
+  // Initial LLM call to set first behavior
+  await callLLM('session_start');
+
+  // Event loop: check periodically if LLM needs to be called
+  const eventLoop = setInterval(async () => {
+    const now = Date.now();
+
+    // Stop condition
+    if (llmCallCount >= maxCalls || now - sessionStart > maxSessionMs) {
+      clearInterval(eventLoop);
+      behaviors.stop();
+      reflex.stop();
+      console.log(`\n[AGENT] Session complete. ${llmCallCount} LLM calls.`);
+      process.exit(0);
+    }
+
+    // Call LLM if: player chatted
+    if (pendingChat && now - lastLLMCall > LLM_CHAT_PRIORITY_INTERVAL) {
+      await callLLM('player_chat');
+      return;
+    }
+
+    // Call LLM if: behavior completed/failed
+    if (behaviors.needsReplan() && now - lastLLMCall > 5000) {
+      await callLLM('behavior_completed');
+      return;
+    }
+
+    // Call LLM on timer
+    if (now - lastLLMCall > LLM_INTERVAL) {
+      await callLLM('timer');
+    }
+  }, 2000); // check every 2 seconds
+
+  // Keep process alive
+  await new Promise(() => {});
 }
 
-// --- Reflex tier ---
-function checkReflexes(state, bot) {
-  // Hostile mob within 5 blocks
-  const nearHostile = state.entities.find(e => e.hostile && e.distance < 5);
-  if (nearHostile) {
-    return { action: 'flee', reason: `${nearHostile.name} at ${nearHostile.distance}m`, entity: nearHostile };
-  }
-
-  // Low food
-  if (state.player.food < 10) {
-    const food = state.inventory.find(i =>
-      ['bread', 'cooked_beef', 'cooked_porkchop', 'apple', 'cooked_chicken',
-       'baked_potato', 'cooked_mutton', 'cooked_salmon', 'cooked_cod'].includes(i.name)
-    );
-    if (food) {
-      return { action: 'eat', reason: `Food: ${state.player.food}/20`, food };
-    }
-  }
-
-  return null;
-}
-
-async function executeReflex(reflex, bot) {
-  switch (reflex.action) {
-    case 'flee': {
-      // Sprint away from hostile
-      bot.setControlState('sprint', true);
-      bot.setControlState('forward', true);
-      await sleep(3000);
-      bot.setControlState('sprint', false);
-      bot.setControlState('forward', false);
-      break;
-    }
-    case 'eat': {
-      const item = bot.inventory.items().find(i => i.name === reflex.food.name);
-      if (item) {
-        await bot.equip(item, 'hand');
-        await bot.consume();
-      }
-      break;
-    }
-  }
-}
-
-// --- Action execution ---
-async function executeAction(decision, bot, agent, writer, library) {
-  switch (decision.action) {
-    case 'skill': {
-      const result = await library.execute(decision.name, bot, decision.params || {});
-      console.log(`[SKILL] ${decision.name}: ${result.success ? 'OK' : 'FAIL — ' + result.error}`);
-      break;
-    }
-    case 'learn': {
-      const state = agent.getState();
-      const result = await writer.writeAndVerify(decision.goal, bot, {
-        inventory: state.inventory,
-        position: state.player.position,
-        nearbyBlocks: state.nearbyBlocks,
-      });
-      console.log(`[LEARN] ${result.success ? 'Stored: ' + result.skill?.name : 'Failed: ' + result.error}`);
-      break;
-    }
-    case 'move': {
-      const dir = decision.direction || 'forward';
-      // If LLM says a cardinal direction, convert to yaw + forward
-      const yawMap = { north: Math.PI, south: 0, east: -Math.PI/2, west: Math.PI/2 };
-      if (yawMap[dir] !== undefined) {
-        await bot.look(yawMap[dir], 0);
-        bot.setControlState('forward', true);
-      } else {
-        bot.setControlState(dir, true);
-      }
-      if (decision.jump) bot.setControlState('jump', true);
-      bot.setControlState('sprint', true);
-      await sleep((decision.duration || 3) * 1000);
-      // Clear all controls
-      for (const c of ['forward','back','left','right','jump','sprint','sneak']) {
-        bot.setControlState(c, false);
-      }
-      break;
-    }
-    case 'chat': {
-      bot.chat(decision.message || 'Hello!');
-      break;
-    }
-    case 'wait': {
-      await sleep((decision.duration || 3) * 1000);
-      break;
-    }
-    default:
-      console.log(`[ACTION] Unknown action: ${decision.action}`);
-  }
-}
+// (Old checkReflexes, executeReflex, executeAction removed —
+//  handled by ReflexTier class and BehaviorEngine)
 
 function summarizeBlocks(blocks) {
   const types = {};
