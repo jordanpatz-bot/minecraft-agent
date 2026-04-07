@@ -45,83 +45,62 @@ function isHostile(n) {
  * Returns the window ID for use with `screencapture -l`.
  */
 function findMinecraftWindow() {
-  try {
-    // Use AppleScript to find Minecraft window
-    const script = `
-tell application "System Events"
-  set windowList to {}
-  repeat with proc in (every process whose name contains "java" or name contains "Minecraft")
-    repeat with win in (every window of proc)
-      set end of windowList to {name of proc, name of win, id of win}
-    end repeat
-  end repeat
-  return windowList
-end tell`;
-    const result = execSync(`osascript -e '${script}'`, { timeout: 5000 }).toString().trim();
-    console.log('[WINDOW] Found:', result);
-
-    // Try CGWindowListCopyWindowInfo approach instead
-    const cgResult = execSync(
-      `python3 -c "
-import json, subprocess
-out = subprocess.check_output(['osascript', '-e', '''
-tell application \\"System Events\\"
-  set wList to {}
-  repeat with p in (every process whose background only is false)
-    try
-      repeat with w in (every window of p)
-        set end of wList to (name of p) & \\"|\\" & (name of w) & \\"|\\" & (id of w as text)
-      end repeat
-    end try
-  end repeat
-  return wList
-end tell
-'''])
-for line in out.decode().split(', '):
-  if 'minecraft' in line.lower() or 'java' in line.lower():
-    print(line.strip())
-"`, { timeout: 10000 }
-    ).toString().trim();
-
-    if (cgResult) {
-      console.log('[WINDOW] Minecraft windows:', cgResult);
-    }
-  } catch (e) {
-    console.log('[WINDOW] AppleScript search failed:', e.message.slice(0, 80));
-  }
-
-  // Fallback: use screencapture with window selection
-  // Get window list via CGWindowListCopyWindowInfo
+  // Use Quartz CGWindowListCopyWindowInfo to find Minecraft
   try {
     const windowInfo = execSync(
       `python3 -c "
 import Quartz, json
 options = Quartz.kCGWindowListOptionOnScreenOnly
 windowList = Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID)
+candidates = []
 for w in windowList:
     name = w.get('kCGWindowOwnerName', '')
     title = w.get('kCGWindowName', '')
     wid = w.get('kCGWindowNumber', 0)
     bounds = w.get('kCGWindowBounds', {})
-    width = bounds.get('Width', 0)
-    height = bounds.get('Height', 0)
-    if width > 400 and height > 300:
-        if 'minecraft' in name.lower() or 'minecraft' in (title or '').lower() or ('java' in name.lower() and width > 800):
-            print(json.dumps({'name': name, 'title': title, 'id': wid, 'width': width, 'height': height}))
+    width = int(bounds.get('Width', 0))
+    height = int(bounds.get('Height', 0))
+    area = width * height
+    # Match Minecraft: java process with large window, or window with 'minecraft' in title
+    is_mc = False
+    if 'minecraft' in (title or '').lower():
+        is_mc = True
+    elif 'java' in name.lower() and width > 600 and height > 400:
+        is_mc = True
+    if is_mc and area > 200000:
+        candidates.append({'name': name, 'title': title, 'id': wid, 'width': width, 'height': height, 'area': area})
+# Pick largest window (most likely the game, not a menu)
+candidates.sort(key=lambda x: -x['area'])
+if candidates:
+    print(json.dumps(candidates[0]))
 "`, { timeout: 5000 }
     ).toString().trim();
 
     if (windowInfo) {
-      const lines = windowInfo.split('\n').filter(l => l.trim());
-      if (lines.length > 0) {
-        const win = JSON.parse(lines[0]);
-        console.log(`[WINDOW] Found: ${win.name} "${win.title}" (${win.width}x${win.height}) ID=${win.id}`);
-        return win.id;
-      }
+      const win = JSON.parse(windowInfo);
+      console.log(`[WINDOW] Found MC: ${win.name} "${win.title}" (${win.width}x${win.height}) ID=${win.id}`);
+      return win.id;
     }
   } catch (e) {
-    console.log('[WINDOW] Quartz search failed:', e.message.slice(0, 80));
+    console.log('[WINDOW] Quartz search failed:', e.message.slice(0, 60));
   }
+
+  // Fallback: try AppleScript
+  try {
+    const result = execSync(`osascript -e '
+tell application "System Events"
+  repeat with p in (every process whose name contains "java")
+    try
+      set w to first window of p
+      return id of w
+    end try
+  end repeat
+end tell'`, { timeout: 5000 }).toString().trim();
+    if (result) {
+      console.log(`[WINDOW] Found via AppleScript: ${result}`);
+      return parseInt(result);
+    }
+  } catch {}
 
   return null;
 }
@@ -160,10 +139,14 @@ async function main() {
     checkTimeoutInterval: 60000,
   });
   bot.on('error', e => console.log('[BOT ERR]', e.message));
+  bot.on('kicked', r => console.log('[BOT KICKED]', r));
   await new Promise(r => bot.once('spawn', r));
-  await sleep(2000);
 
+  // IMMEDIATELY set creative mode so bot can't die
   const rcon = await Rcon.connect({ host: 'localhost', port: 25575, password: 'botadmin' });
+  await rcon.send('gamemode creative ClientCapBot');
+  await sleep(1000);
+  console.log('[CAPTURE BOT] Creative mode set — invincible');
 
   // If following a player, teleport bot to them
   if (FOLLOW_PLAYER) {

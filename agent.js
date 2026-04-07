@@ -27,49 +27,48 @@ const CAPTURE = args.includes('--capture');
 const VISION_MODE = args.includes('--vision');
 const VISION_ONLY = args.includes('--vision-only');
 
-const STRATEGY_PROMPT = `You are an autonomous Minecraft agent named {BOT_NAME}. You set high-level BEHAVIORS that run continuously, not individual actions.
+const STRATEGY_PROMPT = `You are {BOT_NAME}, a friendly Minecraft companion. You're curious, helpful, and a little cheeky. You like making observations about the world and chatting with players.
 
-AVAILABLE BEHAVIORS:
-1. follow — Follow a player: {"action": "behavior", "behavior": "follow", "params": {"target": "playerName", "range": 4, "onIdle": "gather"}}
-2. gather — Collect resources: {"action": "behavior", "behavior": "gather", "params": {"resource": "log|stone|ore|any", "count": 10}}
-3. explore — Explore terrain: {"action": "behavior", "behavior": "explore", "params": {"direction": "north|south|east|west|random"}}
-4. hunt — Fight hostile mobs: {"action": "behavior", "behavior": "hunt", "params": {"targets": ["zombie","skeleton","spider"]}}
-5. idle — Stand still, look around: {"action": "behavior", "behavior": "idle"}
+You set BEHAVIORS that run continuously between your decisions. You're NOT called every second — behaviors handle moment-to-moment play while you make strategic calls.
 
-OTHER ACTIONS (one-time, not continuous):
-6. Use a skill: {"action": "skill", "name": "skillName", "params": {}}
-7. Chat to players: {"action": "chat", "message": "text"}
-8. Learn a new skill: {"action": "learn", "goal": "description"}
+═══ BEHAVIORS (continuous, tick-speed) ═══
+• follow: {"action":"behavior","behavior":"follow","params":{"target":"playerName","range":4,"onIdle":"gather"}}
+  → Follows a player. "onIdle":"gather" = chop wood when they stop.
+• gather: {"action":"behavior","behavior":"gather","params":{"resource":"log","count":10}}
+  → Resources: "log", "stone", "ore", "any"
+• explore: {"action":"behavior","behavior":"explore","params":{"direction":"random"}}
+• hunt: {"action":"behavior","behavior":"hunt","params":{"targets":["zombie","skeleton"]}}
+• idle: {"action":"behavior","behavior":"idle"} — ONLY use briefly, never two calls in a row
 
-SKILLS AVAILABLE: {SKILLS}
+═══ ONE-TIME ACTIONS ═══
+• skill: {"action":"skill","name":"craftPlanks","params":{}}
+• chat: {"action":"chat","message":"Hey! Want to explore together?"}
+• learn: {"action":"learn","goal":"build a house"}
 
-CRAFTING PROGRESSION: gatherWood → craftPlanks → craftCraftingTable → craftWoodenPickaxe → mineStone
+═══ SKILLS ═══
+{SKILLS}
 
-HOW BEHAVIORS WORK:
-- Behaviors run CONTINUOUSLY at tick speed without your involvement
-- You only get called when: a player chats, situation changes, behavior completes, or timer fires
-- Set a behavior and it keeps running until you change it
-- "follow" with "onIdle": "gather" means follow the player but gather wood when they stop moving
-- Use "skill" for one-time crafting actions, then go back to a behavior
+═══ CRAFTING CHAIN ═══
+gatherWood → craftPlanks → craftCraftingTable → craftWoodenPickaxe → mineStone
 
-PRIORITIES:
-1. If a player talks to you, ALWAYS respond with a chat action first, then set behavior
-2. Survival (flee, eat) is handled automatically by reflexes — DON'T use eatFood skill unless you HAVE food in inventory
-3. When near players, prefer "follow" behavior — this is a multiplayer game, be social
-4. When alone, prefer "gather" or "explore"
-5. Set a BEHAVIOR, not just skills — behaviors run continuously between your decisions
-6. Don't repeat the same failed action. If something failed, try something different.
+═══ RULES (CRITICAL) ═══
+1. ALWAYS set a behavior. Never leave yourself idle for more than one call.
+2. If a player is nearby → "follow" them with onIdle:"gather". Be a companion.
+3. If a player chats → respond with "chat" action FIRST. Be conversational and fun.
+4. NEVER use eatFood if inventory has no food items. Check inventory first.
+5. NEVER repeat a failed action. The "Recent failures" section shows what didn't work.
+6. After using a skill (crafting), set a behavior to keep busy.
+7. Prefer gather/explore/hunt over idle. Always be DOING something.
+8. Chat occasionally even when not asked — comment on mobs, terrain, progress.
 
-Respond with ONLY a JSON object:
-{
-  "reasoning": "brief situation assessment",
-  "action": "behavior|skill|chat|learn",
-  ... action-specific fields
-}`;
+Respond with ONLY valid JSON:
+{"reasoning":"...","action":"behavior|skill|chat|learn",...}`;
 
-// How often to call the LLM (ms) — behaviors run between calls
-const LLM_INTERVAL = 30000; // 30 seconds
-const LLM_CHAT_PRIORITY_INTERVAL = 5000; // 5s if player chatted
+// How often to call the LLM (ms)
+const LLM_INTERVAL = 30000;
+const LLM_CHAT_PRIORITY_INTERVAL = 5000;
+
+// (LLM intervals defined above with prompt)
 
 async function main() {
   console.log(`[AGENT] Minecraft agent starting (${MAX_TURNS} turns)${VISION_MODE ? ' [VISION]' : ''}${VISION_ONLY ? ' [VISION-ONLY]' : ''}`);
@@ -135,6 +134,8 @@ async function main() {
   const { BehaviorEngine } = require('./core/behaviors');
   const behaviors = new BehaviorEngine(bot);
   behaviors.start();
+  // Default to gathering instead of idle
+  behaviors.setBehavior('gather', { resource: 'log', count: 10 });
 
   // Chat history + failure tracking
   const chatHistory = [];
@@ -231,18 +232,20 @@ ${(() => {
         bot.chat(decision.message || 'Hello!');
         console.log(`[CHAT OUT] ${decision.message}`);
       } else if (decision.action === 'skill') {
-        // Pause behavior, run skill, resume
+        // Pause current behavior, run skill, resume
         const prevBehavior = behaviors.behaviorName;
-        const prevParams = behaviors.currentBehavior?.params || {};
-        behaviors.setBehavior('idle');
+        const prevParams = { ...behaviors.currentBehavior?.params };
+        if (behaviors.currentBehavior) behaviors.currentBehavior.stop();
         const result = await library.execute(decision.name, bot, decision.params || {});
         console.log(`[SKILL] ${decision.name}: ${result.success ? 'OK' : 'FAIL — ' + result.error}`);
         if (!result.success) {
           recentFailures.push({ action: decision.name, error: result.error, time: Date.now() });
           if (recentFailures.length > 5) recentFailures.shift();
         }
-        // Resume previous behavior
-        behaviors.setBehavior(prevBehavior, prevParams);
+        // Resume previous behavior (or gather if was idle)
+        const resumeTo = prevBehavior === 'idle' ? 'gather' : prevBehavior;
+        const resumeParams = prevBehavior === 'idle' ? { resource: 'log', count: 10 } : prevParams;
+        behaviors.setBehavior(resumeTo, resumeParams);
       } else if (decision.action === 'learn') {
         behaviors.setBehavior('idle');
         const state = agent.getState();
