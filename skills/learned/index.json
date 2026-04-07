@@ -54,7 +54,7 @@
     "dependencies": [],
     "code": "\nconst foods = ['bread','cooked_beef','cooked_porkchop','apple','cooked_chicken',\n  'baked_potato','cooked_mutton','cooked_salmon','cooked_cod','melon_slice',\n  'carrot','potato','beetroot','sweet_berries','dried_kelp','golden_apple',\n  'golden_carrot','rotten_flesh','spider_eye','cookie','pumpkin_pie',\n  'mushroom_stew','rabbit_stew','suspicious_stew','honey_bottle'];\nconst food = bot.inventory.items().find(i => foods.includes(i.name));\nif (!food) { throw new Error('No edible food in inventory (checked ' + bot.inventory.items().map(i=>i.name).join(',') + ')'); }\nawait bot.equip(food, 'hand');\nawait bot.consume();\nbot.chat('Ate ' + food.name);\n    ",
     "postcondition": "bot.food > 15",
-    "failCount": 8,
+    "failCount": 9,
     "createdAt": "2026-04-07T05:39:43.507Z"
   },
   "buildShelter": {
