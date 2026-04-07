@@ -54,9 +54,11 @@ HOW BEHAVIORS WORK:
 
 PRIORITIES:
 1. If a player talks to you, ALWAYS respond with a chat action first, then set behavior
-2. Survival is handled automatically (flee, eat) — don't worry about it
-3. When near players, prefer "follow" behavior
+2. Survival (flee, eat) is handled automatically by reflexes — DON'T use eatFood skill unless you HAVE food in inventory
+3. When near players, prefer "follow" behavior — this is a multiplayer game, be social
 4. When alone, prefer "gather" or "explore"
+5. Set a BEHAVIOR, not just skills — behaviors run continuously between your decisions
+6. Don't repeat the same failed action. If something failed, try something different.
 
 Respond with ONLY a JSON object:
 {
@@ -134,9 +136,10 @@ async function main() {
   const behaviors = new BehaviorEngine(bot);
   behaviors.start();
 
-  // Chat history
+  // Chat history + failure tracking
   const chatHistory = [];
   let pendingChat = null;
+  const recentFailures = []; // track failed actions so LLM doesn't repeat them
   bot.on('chat', (username, message) => {
     if (username !== bot.username) {
       chatHistory.push({ from: username, message, time: Date.now() });
@@ -211,7 +214,7 @@ ${(() => {
     return `Audio: ${Object.entries(audioSummary.threats).map(([m, i]) => `${m}(${i.direction},${i.closest}m)`).join(', ')}`;
   }
   return '';
-})()}${chatPriority}`;
+})()}${recentFailures.length > 0 ? '\nRecent failures (DO NOT repeat): ' + recentFailures.map(f => `${f.action}: ${f.error}`).join('; ') : ''}${chatPriority}`;
 
     console.log('[THINK] Asking LLM...');
     try {
@@ -234,6 +237,10 @@ ${(() => {
         behaviors.setBehavior('idle');
         const result = await library.execute(decision.name, bot, decision.params || {});
         console.log(`[SKILL] ${decision.name}: ${result.success ? 'OK' : 'FAIL — ' + result.error}`);
+        if (!result.success) {
+          recentFailures.push({ action: decision.name, error: result.error, time: Date.now() });
+          if (recentFailures.length > 5) recentFailures.shift();
+        }
         // Resume previous behavior
         behaviors.setBehavior(prevBehavior, prevParams);
       } else if (decision.action === 'learn') {
