@@ -33,12 +33,20 @@ You set BEHAVIORS that run continuously between your decisions. You're NOT calle
 
 ═══ BEHAVIORS (continuous, tick-speed) ═══
 • follow: {"action":"behavior","behavior":"follow","params":{"target":"playerName","range":4,"onIdle":"gather"}}
-  → Follows a player. "onIdle":"gather" = chop wood when they stop.
 • gather: {"action":"behavior","behavior":"gather","params":{"resource":"log","count":10}}
   → Resources: "log", "stone", "ore", "any"
 • explore: {"action":"behavior","behavior":"explore","params":{"direction":"random"}}
 • hunt: {"action":"behavior","behavior":"hunt","params":{"targets":["zombie","skeleton"]}}
-• idle: {"action":"behavior","behavior":"idle"} — ONLY use briefly, never two calls in a row
+• compound: {"action":"behavior","behavior":"compound","params":{
+    "primary":"follow","primaryParams":{"target":"playerName","range":4},
+    "interrupts":[
+      {"condition":"hostile_nearby","behavior":"hunt","params":{"targets":["zombie"]},"range":10},
+      {"condition":"resource_nearby","behavior":"gather","params":{"resource":"log"},"range":8},
+      {"condition":"target_idle","behavior":"gather","params":{"resource":"any"},"idleThreshold":5000}
+    ]}}
+  → COMPOUND is the BEST choice. It chains behaviors with automatic interrupts.
+  → Conditions: hostile_nearby, resource_nearby, low_health, night, target_idle
+• idle: {"action":"behavior","behavior":"idle"} — AVOID. Always be doing something.
 
 ═══ ONE-TIME ACTIONS ═══
 • skill: {"action":"skill","name":"craftPlanks","params":{}}

@@ -474,9 +474,134 @@ class IdleBehavior extends Behavior {
 
 
 /**
+ * COMPOUND — Composable behavior with conditional interrupts.
+ *
+ * The LLM can say: "follow player, gather when idle, hunt if hostiles nearby"
+ * This creates a compound with:
+ *   primary: follow(player)
+ *   interrupts: [
+ *     { condition: 'hostile_nearby', behavior: hunt, range: 10 },
+ *     { condition: 'target_idle', behavior: gather, resource: 'log' },
+ *   ]
+ *
+ * The compound checks interrupts each tick and switches sub-behaviors.
+ */
+class CompoundBehavior extends Behavior {
+  constructor(bot, params = {}) {
+    super(bot, params);
+    this.primaryName = params.primary || 'idle';
+    this.primaryParams = params.primaryParams || {};
+    this.interrupts = params.interrupts || [];
+    this.activeSub = null;
+    this.activeSubName = '';
+    this.registry = null; // set by engine
+    this.lastInterruptCheck = 0;
+  }
+
+  start() {
+    super.start();
+    this._switchTo(this.primaryName, this.primaryParams);
+    this.statusMessage = `Compound: ${this.primaryName} (+ ${this.interrupts.length} interrupts)`;
+  }
+
+  update() {
+    if (!this.active) return;
+
+    // Check interrupts every 2 seconds
+    if (Date.now() - this.lastInterruptCheck > 2000) {
+      this.lastInterruptCheck = Date.now();
+      const triggered = this._checkInterrupts();
+      if (triggered) {
+        if (this.activeSubName !== triggered.behavior) {
+          console.log(`[COMPOUND] Interrupt: ${triggered.condition} → ${triggered.behavior}`);
+          this._switchTo(triggered.behavior, triggered.params || {});
+        }
+      } else if (this.activeSubName !== this.primaryName) {
+        // No interrupt active, return to primary
+        console.log(`[COMPOUND] Resuming primary: ${this.primaryName}`);
+        this._switchTo(this.primaryName, this.primaryParams);
+      }
+    }
+
+    // Update active sub-behavior
+    if (this.activeSub && this.activeSub.active) {
+      this.activeSub.update();
+      this.statusMessage = `Compound[${this.activeSubName}]: ${this.activeSub.statusMessage}`;
+    }
+  }
+
+  _checkInterrupts() {
+    const pos = this.bot.entity.position;
+    if (isNaN(pos.x)) return null;
+
+    for (const interrupt of this.interrupts) {
+      switch (interrupt.condition) {
+        case 'hostile_nearby': {
+          const range = interrupt.range || 15;
+          const hostile = Object.values(this.bot.entities).find(e => {
+            if (!e.position || e === this.bot.entity) return false;
+            const n = e.name?.toLowerCase();
+            const isHostile = ['zombie','skeleton','creeper','spider','enderman','witch','slime'].includes(n);
+            return isHostile && e.position.distanceTo(pos) < range;
+          });
+          if (hostile) return interrupt;
+          break;
+        }
+        case 'resource_nearby': {
+          const resourceType = interrupt.resource || 'log';
+          const block = this.bot.findBlock({
+            matching: b => b.name.includes(resourceType),
+            maxDistance: interrupt.range || 10,
+          });
+          if (block) return interrupt;
+          break;
+        }
+        case 'low_health': {
+          if (this.bot.health < (interrupt.threshold || 10)) return interrupt;
+          break;
+        }
+        case 'night': {
+          if (this.bot.time.timeOfDay >= 13000) return interrupt;
+          break;
+        }
+        case 'target_idle': {
+          // Check if follow target is stationary
+          if (this.activeSub instanceof FollowBehavior && this.activeSub.targetStill) {
+            const stillFor = Date.now() - (this.activeSub.targetStillSince || Date.now());
+            if (stillFor > (interrupt.idleThreshold || 5000)) return interrupt;
+          }
+          break;
+        }
+      }
+    }
+    return null;
+  }
+
+  _switchTo(name, params) {
+    if (this.activeSub) this.activeSub.stop();
+    const BehaviorClass = this.registry?.[name];
+    if (!BehaviorClass) return;
+    this.activeSub = new BehaviorClass(this.bot, params);
+    this.activeSubName = name;
+    this.activeSub.start();
+  }
+
+  stop() {
+    super.stop();
+    if (this.activeSub) this.activeSub.stop();
+  }
+
+  describe() {
+    const interruptDesc = this.interrupts.map(i => `${i.condition}→${i.behavior}`).join(', ');
+    return `Compound[${this.activeSubName}]: ${this.activeSub?.statusMessage || 'starting'} | interrupts: ${interruptDesc}`;
+  }
+}
+
+
+/**
  * BehaviorEngine — manages active behaviors with priority.
  *
- * Only one primary behavior runs at a time. Reflexes can interrupt.
+ * Supports simple behaviors and compound behaviors with interrupts.
  * The LLM sets behaviors via setBehavior().
  */
 class BehaviorEngine {
@@ -493,6 +618,7 @@ class BehaviorEngine {
       explore: ExploreBehavior,
       hunt: HuntBehavior,
       idle: IdleBehavior,
+      compound: CompoundBehavior,
     };
   }
 
@@ -515,6 +641,10 @@ class BehaviorEngine {
 
     this.currentBehavior = new BehaviorClass(this.bot, params);
     this.behaviorName = name;
+    // Pass registry to compound behaviors so they can create sub-behaviors
+    if (this.currentBehavior.registry !== undefined) {
+      this.currentBehavior.registry = this.registry;
+    }
     this.currentBehavior.start();
     console.log(`[BEHAVIOR] Set: ${name} ${JSON.stringify(params)}`);
     return true;
@@ -580,4 +710,5 @@ module.exports = {
   ExploreBehavior,
   HuntBehavior,
   IdleBehavior,
+  CompoundBehavior,
 };
