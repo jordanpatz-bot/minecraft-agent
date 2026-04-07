@@ -190,6 +190,9 @@ async function main() {
     let chatPriority = '';
     if (pendingChat && Date.now() - pendingChat.time < 30000) {
       chatPriority = `\nIMPORTANT — ${pendingChat.from} just said: "${pendingChat.message}"\nRespond via chat action FIRST, then set a behavior. Be friendly and conversational.`;
+      // Mark as responded so it doesn't repeat in chat history
+      const idx = chatHistory.findIndex(c => c.time === pendingChat.time);
+      if (idx >= 0) chatHistory[idx].responded = true;
       pendingChat = null;
     }
 
@@ -208,7 +211,7 @@ Equipment: ${JSON.stringify(state.equipment)}
 Nearby players: ${state.entities.filter(e => e.type === 'player').map(e => `${e.username || e.name}(${e.distance}m)`).join(', ') || 'none'}
 Nearby mobs: ${state.entities.filter(e => e.type !== 'player').slice(0, 6).map(e => `${e.name}(${e.distance}m${e.hostile ? ',HOSTILE' : ''})`).join(', ') || 'none'}
 Nearby blocks: ${summarizeBlocks(state.nearbyBlocks)}
-${chatHistory.slice(-5).map(c => `${c.from}: ${c.message}`).join('\n') || ''}
+${chatHistory.filter(c => !c.responded).slice(-5).map(c => `${c.from}: ${c.message}`).join('\n') || ''}
 ${(() => {
   const audioSummary = audioCapture.getSummary(10000);
   if (audioSummary.threatCount > 0) {
